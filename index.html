@@ -492,6 +492,14 @@ function renderList(v){
     </div>`;
 }
 
+let hkdRate = {}; // 主貨幣 -> 每 1 單位等於幾多 HKD（null=攞緊，0=攞唔到）
+async function ensureHkdRate(base){
+  if (!base || base === 'HKD' || hkdRate[base] !== undefined) return;
+  hkdRate[base] = null;
+  const r = await fetchRate(base, 'HKD');
+  hkdRate[base] = r || 0;
+  if (currentTab === 'settle') render();
+}
 function renderSettle(v){
   const teRaw = tripExpenses();
   const te = teRaw.map(e=>({ ...e, amount: baseAmt(e) })); // 全部折合主貨幣先結算
@@ -499,16 +507,27 @@ function renderSettle(v){
   const involved = new Set();
   teRaw.filter(e=>!e.deleted).forEach(e=>{ involved.add(e.payer); (e.participants||[]).forEach(p=>involved.add(p)); });
   const fams = tripFamilies().filter(f=> involved.has(f.id) || Math.abs(nets[f.id]||0)>0.005);
+  const base = tripCurrency();
+  const showHkd = base && base !== 'HKD';
+  if (showHkd) ensureHkdRate(base);
+  const hr = hkdRate[base];
+  const hkd = n => (showHkd && hr>0)
+    ? `<div class="meta" style="text-align:right;font-weight:400;margin-top:2px">≈ ${fmtC(Math.abs(n)*hr,'HKD')}</div>`
+    : (showHkd && hr===null ? `<div class="meta" style="text-align:right;margin-top:2px">港幣計緊…</div>` : '');
+  const rateNote = showHkd
+    ? `<div class="muted" style="margin-top:8px;font-size:12px">${hr>0?`今日匯率　1 ${esc(base)} ≈ ${round4(hr)} HKD`:(hr===null?'攞緊港幣匯率…':'⚠️ 攞唔到港幣匯率')}</div>`
+    : '';
   v.innerHTML = `
     <div class="card">
-      <div class="muted" style="margin-bottom:6px">每家淨額（以 ${esc(tripCurrency())} 結算，正=應收返，負=要俾）</div>
+      <div class="muted" style="margin-bottom:6px">每家淨額（以 ${esc(base)} 結算，正=應收返，負=要俾）</div>
       ${fams.length ? fams.map(f=>{ const n=nets[f.id]||0; const c=n>0?'pos':n<0?'neg':'';
-        return `<div class="net">${esc(f.name)}<b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('') : '<div class="empty">未有開支</div>'}
+        return `<div class="net">${esc(f.name)}<div style="margin-left:auto;text-align:right"><b class="${c}">${n>0?'+':''}${fmt(n)}</b>${hkd(n)}</div></div>`; }).join('') : '<div class="empty">未有開支</div>'}
+      ${rateNote}
     </div>
     <div class="card">
       <div class="muted" style="margin-bottom:10px">點樣過數（最少筆數）</div>
       ${transfers.length ? transfers.map(t=>`
-        <div class="pay"><b>${esc(famName(t.from))}</b> 俾 <b>${esc(famName(t.to))}</b><span class="big">${fmt(t.amount)}</span></div>
+        <div class="pay"><b>${esc(famName(t.from))}</b> 俾 <b>${esc(famName(t.to))}</b><div class="big" style="text-align:right">${fmt(t.amount)}${hkd(t.amount)}</div></div>
       `).join('') : '<div class="empty">大家啱數，唔使過數 🎉</div>'}
     </div>`;
 }

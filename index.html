@@ -13,6 +13,11 @@
     :root{ --bg:#16181c; --card:#22262e; --text:#e7e9ee; --muted:#9aa1ac; --line:#333944;
       --accent:#60a5fa; --accent-soft:#1e3a5f; --pos:#4ade80; --neg:#f87171; --shadow:0 1px 3px rgba(0,0,0,.4); }
   }
+  /* 手動切換：[data-theme] 特異度高過 media query，一定贏 */
+  :root[data-theme="dark"]{ --bg:#16181c; --card:#22262e; --text:#e7e9ee; --muted:#9aa1ac; --line:#333944;
+    --accent:#60a5fa; --accent-soft:#1e3a5f; --pos:#4ade80; --neg:#f87171; --shadow:0 1px 3px rgba(0,0,0,.4); }
+  :root[data-theme="light"]{ --bg:#f5f6f8; --card:#fff; --text:#1c1e21; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --accent-soft:#dbeafe; --pos:#16a34a; --neg:#dc2626; --shadow:0 1px 3px rgba(0,0,0,.08); }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body{ margin:0; font-family:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
     background:var(--bg); color:var(--text); font-size:16px; line-height:1.5; }
@@ -74,7 +79,9 @@
 </head>
 <body>
 <div class="wrap">
-  <h1><span id="title">旅行分帳</span><button class="refresh" onclick="load()">↻ 刷新</button></h1>
+  <h1><span id="title">旅行分帳</span>
+    <button class="refresh" id="themeBtn" onclick="toggleTheme()" style="margin-left:auto" aria-label="切換光暗">🌙</button>
+    <button class="refresh" onclick="load()">↻ 刷新</button></h1>
   <div id="tripbar"></div>
   <div id="view"><div class="empty">載入中…</div></div>
 </div>
@@ -160,7 +167,8 @@ function fromSheets(sh){
       payer:String(e.payer||''), amount:Number(e.amount)||0,
       participants:String(e.participants||'').split(',').filter(Boolean),
       note:String(e.note==null?'':e.note), createdAt:String(e.createdAt||''),
-      deleted: truthy(e.deleted), trip:String(e.trip||'') }))
+      deleted: truthy(e.deleted), trip:String(e.trip||''),
+      currency:String(e.currency||''), rate:Number(e.rate)||1 }))
   };
 }
 
@@ -193,10 +201,22 @@ function famName(id){ const f = state.families.find(x=>x.id===id); return f ? f.
 function categories(){ return (state.config.categories||'其他').split(',').map(s=>s.trim()).filter(Boolean); }
 function todayStr(){ const d=new Date(); const l=new Date(d.getTime()-d.getTimezoneOffset()*60000); return l.toISOString().slice(0,10); }
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function symbol(){ const c=tripCurrency(); return SYMBOL[c] || (c ? c+' ' : '$'); }
-function fmt(n){ const c=tripCurrency(); const d=ZERO_DEC.has(c)?0:2;
-  return symbol() + Number(n).toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }
+function symbolOf(c){ return SYMBOL[c] || (c ? c+' ' : '$'); }
+function fmtC(n, cur){ const d=ZERO_DEC.has(cur)?0:2; return symbolOf(cur)+Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
+function fmt(n){ return fmtC(n, tripCurrency()); }
+function round4(n){ return Math.round(n*10000)/10000; }
+function baseAmt(e){ return e.amount * (e.rate || 1); }
+async function fetchRate(from, to){
+  if (from === to) return 1;
+  try{ const r = await fetch(`https://open.er-api.com/v6/latest/${encodeURIComponent(from)}`);
+    const j = await r.json(); return (j && j.rates && j.rates[to]) ? j.rates[to] : null; }
+  catch(e){ return null; }
+}
 function myFamily(){ return localStorage.getItem('myFamily') || ''; }
+// 光暗主題
+function currentTheme(){ const t=localStorage.getItem('theme'); if(t) return t; return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; }
+function applyTheme(){ const t=localStorage.getItem('theme'); const r=document.documentElement; if(t) r.setAttribute('data-theme',t); else r.removeAttribute('data-theme'); const b=document.getElementById('themeBtn'); if(b) b.textContent = currentTheme()==='dark'?'☀️':'🌙'; }
+function toggleTheme(){ localStorage.setItem('theme', currentTheme()==='dark'?'light':'dark'); applyTheme(); }
 function currencyOptions(sel){
   const inList = PINNED.concat(ALL).some(x=>x[0]===sel);
   return `${sel && !inList ? `<option value="${esc(sel)}" selected>${esc(sel)}</option>`:''}
@@ -273,6 +293,10 @@ function renderAdd(v){
   const fams = activeFamilies();
   const sel = editing ? editing.payer : (myFamily() || (fams[0]&&fams[0].id) || '');
   const parts = editing ? editing.participants : fams.map(f=>f.id);
+  const base = tripCurrency();
+  const ecur = editing ? (editing.currency||base) : base;
+  const erate = editing ? (editing.rate||1) : 1;
+  const showFx = ecur !== base;
   v.innerHTML = `
     <div class="card">
       ${fams.length ? '' : `<div class="banner">未有家庭 — 去 ⚙️設定 新增家庭先可以入數。</div>`}
@@ -283,8 +307,20 @@ function renderAdd(v){
       <select id="f-cat">${cats.map(c=>`<option ${editing&&editing.category===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
       <label>邊個俾錢</label>
       <select id="f-payer">${fams.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join('')}</select>
-      <label>金額（${esc(tripCurrency())}）</label>
-      <input type="number" id="f-amt" inputmode="decimal" step="0.01" min="0" placeholder="0" value="${editing?editing.amount:''}">
+      <label>金額</label>
+      <div class="row">
+        <input type="number" id="f-amt" inputmode="decimal" step="0.01" min="0" placeholder="0" value="${editing?editing.amount:''}" oninput="updateConv()" style="flex:2">
+        <select id="f-cur" onchange="onCurChange()" style="flex:1.3">${currencyOptions(ecur)}</select>
+      </div>
+      <div id="f-fx" style="display:${showFx?'block':'none'};margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span class="muted" id="f-fxlabel">匯率　1 ${esc(ecur)} =</span>
+          <input type="number" id="f-rate" step="0.0001" value="${showFx?erate:''}" oninput="updateConv()" style="width:120px;padding:6px 8px">
+          <span class="muted" id="f-fxbase">${esc(base)}</span>
+        </div>
+        <div class="muted" id="f-conv" style="margin-top:6px"></div>
+        <div class="muted" id="f-fxinfo" style="margin-top:2px"></div>
+      </div>
       <label>邊幾家有份分（點揀）</label>
       <div class="chips" id="f-parts">
         ${fams.map(f=>`<span class="chip ${parts.includes(f.id)?'on':''}" data-id="${f.id}" onclick="this.classList.toggle('on')">${esc(f.name)}</span>`).join('')}
@@ -293,6 +329,33 @@ function renderAdd(v){
       <input type="text" id="f-note" value="${editing?esc(editing.note):''}" placeholder="例：民宿兩晚">
       <button class="btn" onclick="submitExpense()">${editing?'更新':'記低'}</button>
     </div>`;
+  updateConv();
+}
+
+// 貨幣改動：攞匯率、更新換算預覽
+async function onCurChange(){
+  const cur = document.getElementById('f-cur').value;
+  const base = tripCurrency();
+  const fx = document.getElementById('f-fx');
+  if (cur === base){ fx.style.display='none'; updateConv(); return; }
+  fx.style.display='block';
+  document.getElementById('f-fxlabel').textContent = `匯率　1 ${cur} =`;
+  document.getElementById('f-fxbase').textContent = base;
+  document.getElementById('f-fxinfo').textContent = '攞緊匯率…';
+  document.getElementById('f-rate').value = '';
+  const rate = await fetchRate(cur, base);
+  document.getElementById('f-rate').value = rate ? round4(rate) : '';
+  document.getElementById('f-fxinfo').textContent = rate ? '（自動匯率，可手動改）' : '⚠️ 攞唔到匯率，請自己填';
+  updateConv();
+}
+function updateConv(){
+  const curEl = document.getElementById('f-cur'); if (!curEl) return;
+  const cur = curEl.value, base = tripCurrency();
+  const conv = document.getElementById('f-conv');
+  if (cur === base){ if (conv) conv.textContent = ''; return; }
+  const amt = parseFloat(document.getElementById('f-amt').value)||0;
+  const rate = parseFloat(document.getElementById('f-rate').value)||0;
+  if (conv) conv.textContent = rate ? `≈ ${fmtC(amt*rate, base)}（用嚟結算）` : '';
 }
 
 async function submitExpense(){
@@ -306,16 +369,20 @@ async function submitExpense(){
   if (!date || !payer){ alert('請填日期同俾錢家庭'); return; }
   if (!(amount>0)){ alert('請填正確金額'); return; }
   if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
+  const base = tripCurrency();
+  const currency = (document.getElementById('f-cur') || {}).value || base;
+  let rate = 1;
+  if (currency !== base){ rate = parseFloat(document.getElementById('f-rate').value); if (!(rate>0)){ alert('請填匯率（1 '+currency+' = ? '+base+'）'); return; } }
   const parts = participants.join(',');
   if (editingId){
     const e = state.expenses.find(x=>x.id===editingId);
-    if (e) Object.assign(e, {date, category, payer, amount, participants:participants.slice(), note, trip:currentTrip});
-    bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip}));
+    if (e) Object.assign(e, {date, category, payer, amount, participants:participants.slice(), note, trip:currentTrip, currency, rate});
+    bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip, currency, rate}));
     editingId = null;
   } else {
     const id = 'e'+Date.now(), createdAt = new Date().toISOString();
-    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip});
-    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip}));
+    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate});
+    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate}));
   }
   if (currentTab==='add') renderAdd(document.getElementById('view'));
   toast('已記低 ✓');
@@ -340,7 +407,7 @@ function renderList(v){
   if (filters.fam) list = list.filter(e=>e.payer===filters.fam || e.participants.includes(filters.fam));
   if (filters.cat) list = list.filter(e=>e.category===filters.cat);
   list.sort((a,b)=> (a.date<b.date?1:a.date>b.date?-1:(a.createdAt<b.createdAt?1:-1)));
-  const total = list.reduce((s,e)=>s+e.amount,0);
+  const total = list.reduce((s,e)=>s+baseAmt(e),0);
   const cats = categories();
   v.innerHTML = `
     <div class="card">
@@ -356,7 +423,7 @@ function renderList(v){
             ${cats.map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join('')}
           </select></div>
       </div>
-      <div class="muted" style="margin-top:10px">共 ${list.length} 筆 · 合計 ${fmt(total)}</div>
+      <div class="muted" style="margin-top:10px">共 ${list.length} 筆 · 合計 ≈ ${fmt(total)}</div>
     </div>
     <div class="card">
       ${list.length ? list.map(e=>`
@@ -366,20 +433,21 @@ function renderList(v){
             <div class="meta">${e.date} · 分：${e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}</div>
             <div class="acts"><button onclick="editExpense('${e.id}')">改</button><button onclick="delExpense('${e.id}')">刪</button></div>
           </div>
-          <div class="amt">${fmt(e.amount)}</div>
+          <div class="amt">${fmtC(e.amount, e.currency||tripCurrency())}${(e.currency && e.currency!==tripCurrency()) ? `<div class="meta" style="text-align:right;font-weight:400;margin-top:2px">≈ ${fmt(baseAmt(e))}</div>` : ''}</div>
         </div>`).join('') : '<div class="empty">呢個 trip 未有開支</div>'}
     </div>`;
 }
 
 function renderSettle(v){
-  const te = tripExpenses();
+  const teRaw = tripExpenses();
+  const te = teRaw.map(e=>({ ...e, amount: baseAmt(e) })); // 全部折合主貨幣先結算
   const { nets, transfers } = settleDebts(te, state.families);
   const involved = new Set();
-  te.filter(e=>!e.deleted).forEach(e=>{ involved.add(e.payer); (e.participants||[]).forEach(p=>involved.add(p)); });
+  teRaw.filter(e=>!e.deleted).forEach(e=>{ involved.add(e.payer); (e.participants||[]).forEach(p=>involved.add(p)); });
   const fams = state.families.filter(f=> involved.has(f.id) || Math.abs(nets[f.id]||0)>0.005);
   v.innerHTML = `
     <div class="card">
-      <div class="muted" style="margin-bottom:6px">每家淨額（正=應收返，負=要俾）</div>
+      <div class="muted" style="margin-bottom:6px">每家淨額（以 ${esc(tripCurrency())} 結算，正=應收返，負=要俾）</div>
       ${fams.length ? fams.map(f=>{ const n=nets[f.id]||0; const c=n>0?'pos':n<0?'neg':'';
         return `<div class="net">${esc(f.name)}<b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('') : '<div class="empty">未有開支</div>'}
     </div>
@@ -437,6 +505,7 @@ function renameFam(id){ const n=prompt('改名：', famName(id)); if(!(n&&n.trim
 function toggleFam(id, active){ const f=state.families.find(x=>x.id===id); if(f) f.active=active; render(); bgWrite(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
 window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') refresh(); });
+applyTheme();
 load();
 </script>
 </body>

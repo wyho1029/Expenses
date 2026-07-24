@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>旅行分帳</title>
+<script>
+// 由 404.html 跳返嚟時，將 /Expenses/?/<slug> 還原做乾淨網址 /Expenses/<slug>
+(function(l){
+  if (l.search[1] === '/'){
+    var decoded = l.search.slice(1).split('&').map(function(s){ return s.replace(/~and~/g, '&'); }).join('?');
+    window.history.replaceState(null, null, l.pathname.slice(0, -1) + decoded + l.hash);
+  }
+}(window.location));
+</script>
 <style>
   :root{
     --bg:#f5f6f8; --card:#fff; --text:#1c1e21; --muted:#6b7280; --line:#e5e7eb;
@@ -114,10 +123,16 @@ const ZERO_DEC = new Set(['JPY','TWD','KRW','VND','HUF','CLP','ISK','MMK','LAK',
 
 let state = { config:{}, families:[], trips:[], expenses:[] };
 let currentTab = 'add';
-let currentTrip = localStorage.getItem('currentTrip') || '';
+let currentTrip = '';          // trip id，由網址 slug 決定；'' = landing，'__notfound__' = 搵唔到
 let newTripMode = false;
 let editingId = null;
 let filters = { fam:'', cat:'' };
+
+// ---- 網址路由（每個 trip 一條專屬 link）----
+const BASE = '/Expenses/';
+function urlSlug(){ const m = location.pathname.match(/\/Expenses\/([^\/?#]+)/); return m ? decodeURIComponent(m[1]) : ''; }
+function tripUrl(slug){ return location.origin + BASE + encodeURIComponent(slug); }
+let lockedSlug = urlSlug();
 
 // ---- 通用資料層（配合通用 Code.gs） ----
 async function api(action, payload){
@@ -146,7 +161,7 @@ function bgWrite(promise){
 async function refresh(){
   if (pending > 0 || refreshing) return;
   refreshing = true;
-  try{ const res = await api('bootstrap'); if (res.ok){ state = fromSheets(res.data.sheets||{}); ensureCurrentTrip(); render(); } }
+  try{ const res = await api('bootstrap'); if (res.ok){ state = fromSheets(res.data.sheets||{}); resolveTrip(); render(); } }
   catch(e){}
   finally{ refreshing = false; }
 }
@@ -162,7 +177,7 @@ function fromSheets(sh){
     families: (sh.Families||[]).map(f=>({ id:String(f.id), name:String(f.name==null?'':f.name),
       active: !(f.active === false || String(f.active).toUpperCase() === 'FALSE'), trip:String(f.trip||'') })),
     trips: (sh.Trips||[]).map(t=>({ id:String(t.id), name:String(t.name==null?'':t.name),
-      currency:String(t.currency||''), archived: truthy(t.archived), deleted: truthy(t.deleted) })),
+      currency:String(t.currency||''), archived: truthy(t.archived), deleted: truthy(t.deleted), slug:String(t.slug||'') })),
     expenses: (sh.Expenses||[]).map(e=>({ id:String(e.id), date:String(e.date||''), category:String(e.category||''),
       payer:String(e.payer||''), amount:Number(e.amount)||0,
       participants:String(e.participants||'').split(',').filter(Boolean),
@@ -179,7 +194,7 @@ async function load(){
     if (!res.ok) throw res.error;
     state = fromSheets(res.data.sheets || {});
   }catch(e){ alert('載入失敗：' + e); }
-  ensureCurrentTrip();
+  resolveTrip();
   render();
 }
 
@@ -188,13 +203,21 @@ function trips(){ return (state.trips || []).filter(t=>!t.deleted); }
 function currentTripObj(){ return trips().find(t=>t.id===currentTrip); }
 function tripCurrency(){ const t=currentTripObj(); return t ? t.currency : ''; }
 function tripExpenses(){ return (state.expenses||[]).filter(e=>e.trip===currentTrip); }
-function ensureCurrentTrip(){
-  if (!trips().find(t=>t.id===currentTrip)){
-    const active = trips().filter(t=>!t.archived);
-    const pick = active.length ? active[active.length-1] : (trips().length ? trips()[trips().length-1] : null);
-    currentTrip = pick ? pick.id : '';
-    localStorage.setItem('currentTrip', currentTrip);
+function resolveTrip(){
+  if (lockedSlug){
+    const t = (state.trips||[]).find(x=>!x.deleted && ((x.slug||'')===lockedSlug || x.id===lockedSlug));
+    currentTrip = t ? t.id : '__notfound__';
+    if (t) rememberTrip(t);
+  } else {
+    currentTrip = '';
   }
+}
+function recentTrips(){ try{ return JSON.parse(localStorage.getItem('recentTrips')||'[]'); }catch(e){ return []; } }
+function rememberTrip(t){
+  const key = t.slug || t.id;
+  const list = recentTrips().filter(x=>x.slug!==key);
+  list.unshift({slug:key, name:t.name});
+  localStorage.setItem('recentTrips', JSON.stringify(list.slice(0,12)));
 }
 function tripFamilies(){ return state.families.filter(f=>f.trip===currentTrip); }
 function activeFamilies(){ return tripFamilies().filter(f=>f.active); }
@@ -232,47 +255,76 @@ function go(tab){
   if (tab==='list' || tab==='settle') refresh();  // 背景攞最新
 }
 
-// ---- trip bar ----
+// ---- trip bar（每個 trip 一條專屬網址，冇「所有 trip」清單）----
+function createFormHtml(title, cancelable){
+  return `<div class="card">
+    <label>${title}</label>
+    <input type="text" id="nt-name" placeholder="例：高雄 trip 2026">
+    <label>連結名（英文/數字，會變成你嘅專屬網址 /Expenses/…）</label>
+    <input type="text" id="nt-slug" placeholder="例：Kaohsiung2026">
+    <label>貨幣（呢個 trip 用）</label>
+    <select id="nt-curr"><option value="" disabled selected>揀貨幣…</option>${currencyOptions('')}</select>
+    <div class="row" style="margin-top:12px">
+      <button class="btn" style="margin-top:0" onclick="createTrip()">建立</button>
+      ${cancelable ? `<button class="btn ghost" style="margin-top:0;flex:0 0 auto" onclick="cancelNewTrip()">取消</button>`:''}
+    </div>
+  </div>`;
+}
+function recentTripsHtml(){
+  const r = recentTrips();
+  if (!r.length) return '';
+  return `<div class="card">
+    <label>你喺呢部手機開過嘅 trip（淨係你部機記住，唔會畀人睇到）</label>
+    ${r.map(x=>`<div class="fam"><span class="name">${esc(x.name)}</span><button class="btn ghost" onclick="openTrip('${esc(x.slug)}')">開</button></div>`).join('')}
+  </div>`;
+}
 function renderTripBar(){
   const el = document.getElementById('tripbar');
   if (API_URL.indexOf('PASTE_YOUR') === 0){ el.innerHTML=''; return; }
-  const ts = trips();
-  if (newTripMode || ts.length === 0){
-    el.innerHTML = `
-      <div class="card">
-        <label>${ts.length ? '新增 trip' : '未有 trip，先建立一個'}</label>
-        <input type="text" id="nt-name" placeholder="例：高雄 trip 2026">
-        <label>貨幣（呢個 trip 用）</label>
-        <select id="nt-curr"><option value="" disabled selected>揀貨幣…</option>${currencyOptions('')}</select>
-        <div class="row" style="margin-top:12px">
-          <button class="btn" style="margin-top:0" onclick="createTrip()">建立</button>
-          ${ts.length ? `<button class="btn ghost" style="margin-top:0;flex:0 0 auto" onclick="cancelNewTrip()">取消</button>`:''}
-        </div>
-      </div>`;
+  if (currentTrip === '__notfound__'){
+    el.innerHTML = `<div class="banner">搵唔到呢個 trip（連結可能唔啱或者已刪除）。</div>` + createFormHtml('或者建立一個新 trip', false) + recentTripsHtml();
     return;
   }
-  const list = ts.slice().reverse(); // 新→舊
+  if (!currentTrip){ // landing（base 網址）
+    el.innerHTML = createFormHtml('建立一個 trip（會有一條專屬 link 畀你 share）', false) + recentTripsHtml();
+    return;
+  }
+  const t = currentTripObj();
   el.innerHTML = `
     <div class="tripsel">
-      <select onchange="selectTrip(this.value)">
-        ${list.map(t=>`<option value="${t.id}" ${t.id===currentTrip?'selected':''}>${esc(t.name)}${t.archived?'（已封存）':''}</option>`).join('')}
-      </select>
-      <button class="btn ghost" onclick="showNewTrip()">＋ 新 trip</button>
-    </div>`;
+      <div style="flex:1;font-weight:600;font-size:17px">${esc(t.name)}${t.archived?'（已封存）':''}</div>
+      <button class="btn ghost" onclick="shareTrip()">🔗 分享</button>
+      <button class="btn ghost" onclick="showNewTrip()">＋</button>
+    </div>
+    ${newTripMode ? createFormHtml('新 trip', true) : ''}`;
 }
-function selectTrip(id){ currentTrip=id; localStorage.setItem('currentTrip', id); newTripMode=false; render(); }
+function openTrip(slug){
+  lockedSlug = slug; newTripMode = false; currentTab = 'add';
+  history.pushState(null,'', tripUrl(slug));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab==='add'));
+  resolveTrip(); render();
+}
 function showNewTrip(){ newTripMode=true; renderTripBar(); }
 function cancelNewTrip(){ newTripMode=false; renderTripBar(); }
+function shareTrip(){
+  const t=currentTripObj(); if(!t) return; const url=tripUrl(t.slug||t.id);
+  if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(()=>toast('已複製 link ✓'), ()=>prompt('複製呢條 link：', url)); }
+  else prompt('複製呢條 link：', url);
+}
 function createTrip(){
   const name = document.getElementById('nt-name').value.trim();
+  let slug = document.getElementById('nt-slug').value.trim().replace(/[^A-Za-z0-9_-]/g,'');
   const currency = document.getElementById('nt-curr').value;
   if (!name){ alert('請輸入 trip 名'); return; }
+  if (!slug){ alert('請輸入連結名（英文/數字，例：Kaohsiung2026）'); return; }
   if (!currency){ alert('請揀貨幣'); return; }
+  if ((state.trips||[]).some(t=>!t.deleted && (t.slug||'')===slug)){ alert('呢個連結名已經有人用咗，換過一個'); return; }
   const id = 't' + Date.now();
-  state.trips.push({id, name, currency, archived:false});
-  currentTrip = id; localStorage.setItem('currentTrip', id); newTripMode=false;
+  state.trips.push({id, name, currency, slug, archived:false, deleted:false});
+  currentTrip = id; lockedSlug = slug; newTripMode=false;
+  history.pushState(null,'', tripUrl(slug));
   render();
-  bgWrite(apiAppend('Trips', {id, name, currency, archived:'FALSE'}));
+  bgWrite(apiAppend('Trips', {id, name, currency, slug, archived:'FALSE'}));
   toast('已建立 ' + name + ' ✓');
 }
 
@@ -284,6 +336,7 @@ function render(){
     v.innerHTML = `<div class="banner">未設定 API：請跟 <b>SETUP.md</b> 部署 Apps Script，再把 <code>index.html</code> 頂部嘅 <code>API_URL</code> 換成你嘅 Web App URL。</div>`;
     return;
   }
+  if (!currentTripObj()){ v.innerHTML = ''; return; }  // landing / 搵唔到：tripbar 已處理
   ({add:renderAdd, list:renderList, settle:renderSettle, settings:renderSettings}[currentTab])(v);
 }
 
@@ -506,16 +559,18 @@ function deleteTrip(){
   if(!confirm(`確定刪除「${t.name}」？呢個 trip 嘅開支同家庭會一齊隱藏。`)) return;
   const st=state.trips.find(x=>x.id===currentTrip); if(st) st.deleted=true;
   bgWrite(apiUpdate('Trips', currentTrip, {deleted:'TRUE'}));
-  ensureCurrentTrip();
-  render();
+  goLanding();
   toast('已刪除 trip');
 }
+// 返去 base 網址（landing，唔鎖任何 trip）
+function goLanding(){ lockedSlug=''; newTripMode=false; history.pushState(null,'', location.origin + BASE); resolveTrip(); render(); }
 function saveCats(){ const v=document.getElementById('s-cats').value; state.config.categories=v; render(); bgWrite(apiUpdate('Config', 'categories', {value:v}, 'key')); toast('已儲存類別 ✓'); }
 function addFam(){ const n=prompt('新家庭名稱：'); if(!(n&&n.trim())) return; const id='f'+Date.now(); state.families.push({id, name:n.trim(), active:true, trip:currentTrip}); render(); bgWrite(apiAppend('Families', {id, name:n.trim(), active:'TRUE', trip:currentTrip})); toast('已加 '+n.trim()); }
 function renameFam(id){ const n=prompt('改名：', famName(id)); if(!(n&&n.trim())) return; const f=state.families.find(x=>x.id===id); if(f) f.name=n.trim(); render(); bgWrite(apiUpdate('Families', id, {name:n.trim()})); }
 function toggleFam(id, active){ const f=state.families.find(x=>x.id===id); if(f) f.active=active; render(); bgWrite(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
 window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') refresh(); });
+window.addEventListener('popstate', ()=>{ lockedSlug = urlSlug(); newTripMode=false; resolveTrip(); render(); });
 applyTheme();
 load();
 </script>

@@ -22,10 +22,12 @@
 
 **`Expenses`**（開支，只需標題列，資料由 app 自動加）
 
-| id | date | category | payer | amount | participants | note | createdAt | deleted |
-|----|------|----------|-------|--------|--------------|------|-----------|---------|
+| id | date | category | payer | amount | participants | note | createdAt | deleted | trip |
+|----|------|----------|-------|--------|--------------|------|-----------|---------|------|
 
 > 分頁名同標題大小寫要一樣。
+>
+> 💡 其實唔使自己手動整分頁／標題都得 —— `Code.gs` 會喺第一次載入時**自動建立**缺少嘅分頁（包括 `Trips`）同補齊標題列。你開一個空白 Google Sheet、貼好 Code.gs 部署就會自動整定。`Trips` 分頁欄位：`id｜name｜currency｜archived`。
 
 ## 2. 貼上後端程式碼
 

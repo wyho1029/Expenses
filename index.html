@@ -17,7 +17,7 @@
   body{ margin:0; font-family:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
     background:var(--bg); color:var(--text); font-size:16px; line-height:1.5; }
   .wrap{ max-width:640px; margin:0 auto; padding:16px 16px 96px; }
-  h1{ font-size:20px; margin:4px 0 16px; display:flex; align-items:center; gap:8px; }
+  h1{ font-size:20px; margin:4px 0 12px; display:flex; align-items:center; gap:8px; }
   h1 .refresh{ margin-left:auto; font-size:14px; font-weight:400; background:none; border:1px solid var(--line);
     color:var(--muted); padding:6px 10px; border-radius:8px; }
   .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:var(--shadow); }
@@ -31,6 +31,9 @@
     font-weight:600; font-size:16px; margin-top:16px; }
   .btn.sec{ background:var(--accent-soft); color:var(--accent); }
   .btn.ghost{ background:none; border:1px solid var(--line); color:var(--muted); margin-top:0; padding:8px 12px; width:auto; font-size:14px; font-weight:500; }
+  .tripsel{ display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+  .tripsel select{ flex:1; font-weight:600; }
+  .tripsel .btn.ghost{ white-space:nowrap; }
   .chips{ display:flex; flex-wrap:wrap; gap:8px; }
   .chip{ display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line);
     border-radius:20px; background:var(--bg); font-size:14px; user-select:none; }
@@ -63,12 +66,12 @@
   nav .ic{ font-size:20px; }
   .banner{ background:#fef3c7; color:#92400e; padding:12px 14px; border-radius:10px; font-size:14px; margin-bottom:12px; }
   @media (prefers-color-scheme: dark){ .banner{ background:#3a2f16; color:#fbbf24; } }
-  select[multiple]{ height:auto; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1><span id="title">旅行分帳</span><button class="refresh" onclick="load()">↻ 刷新</button></h1>
+  <div id="tripbar"></div>
   <div id="view"></div>
 </div>
 <nav>
@@ -97,8 +100,10 @@ const SYMBOL = {USD:'$',CNY:'¥',HKD:'HK$',JPY:'¥',TWD:'NT$',KRW:'₩',EUR:'€
   SGD:'S$',THB:'฿',MYR:'RM',PHP:'₱',VND:'₫',INR:'₹',NZD:'NZ$',MOP:'MOP$',IDR:'Rp',CHF:'CHF '};
 const ZERO_DEC = new Set(['JPY','TWD','KRW','VND','HUF','CLP','ISK','MMK','LAK','KHR','IDR','MNT']);
 
-let state = { config:{}, families:[], expenses:[] };
+let state = { config:{}, families:[], trips:[], expenses:[] };
 let currentTab = 'add';
+let currentTrip = localStorage.getItem('currentTrip') || '';
+let newTripMode = false;
 let editingId = null;
 let filters = { fam:'', cat:'' };
 
@@ -120,6 +125,7 @@ async function load(){
     if (!res.ok) throw res.error;
     state = res.data;
   }catch(e){ alert('載入失敗：' + e); }
+  ensureCurrentTrip();
   render();
 }
 
@@ -131,24 +137,85 @@ async function write(action, payload){
 }
 
 // ---- helpers ----
+function trips(){ return state.trips || []; }
+function currentTripObj(){ return trips().find(t=>t.id===currentTrip); }
+function tripCurrency(){ const t=currentTripObj(); return t ? t.currency : ''; }
+function tripExpenses(){ return (state.expenses||[]).filter(e=>e.trip===currentTrip); }
+function ensureCurrentTrip(){
+  if (!trips().find(t=>t.id===currentTrip)){
+    const active = trips().filter(t=>!t.archived);
+    const pick = active.length ? active[active.length-1] : (trips().length ? trips()[trips().length-1] : null);
+    currentTrip = pick ? pick.id : '';
+    localStorage.setItem('currentTrip', currentTrip);
+  }
+}
 function activeFamilies(){ return state.families.filter(f=>f.active); }
 function famName(id){ const f = state.families.find(x=>x.id===id); return f ? f.name : id; }
 function categories(){ return (state.config.categories||'其他').split(',').map(s=>s.trim()).filter(Boolean); }
 function todayStr(){ const d=new Date(); const l=new Date(d.getTime()-d.getTimezoneOffset()*60000); return l.toISOString().slice(0,10); }
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function symbol(){ const c=state.config.currency||''; return SYMBOL[c] || (c ? c+' ' : '$'); }
-function fmt(n){ const c=state.config.currency||''; const d=ZERO_DEC.has(c)?0:2;
+function symbol(){ const c=tripCurrency(); return SYMBOL[c] || (c ? c+' ' : '$'); }
+function fmt(n){ const c=tripCurrency(); const d=ZERO_DEC.has(c)?0:2;
   return symbol() + Number(n).toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }
 function myFamily(){ return localStorage.getItem('myFamily') || ''; }
+function currencyOptions(sel){
+  const inList = PINNED.concat(ALL).some(x=>x[0]===sel);
+  return `${sel && !inList ? `<option value="${esc(sel)}" selected>${esc(sel)}</option>`:''}
+    <optgroup label="常用">${PINNED.map(([k,n])=>`<option value="${k}" ${sel===k?'selected':''}>${k} ${n}</option>`).join('')}</optgroup>
+    <optgroup label="全部">${ALL.map(([k,n])=>`<option value="${k}" ${sel===k?'selected':''}>${k} — ${n}</option>`).join('')}</optgroup>`;
+}
 
 function go(tab){
-  currentTab = tab; editingId = null;
+  currentTab = tab; editingId = null; newTripMode = false;
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
   if (tab==='list' || tab==='settle') load(); else render();
 }
 
+// ---- trip bar ----
+function renderTripBar(){
+  const el = document.getElementById('tripbar');
+  if (API_URL.indexOf('PASTE_YOUR') === 0){ el.innerHTML=''; return; }
+  const ts = trips();
+  if (newTripMode || ts.length === 0){
+    el.innerHTML = `
+      <div class="card">
+        <label>${ts.length ? '新增 trip' : '未有 trip，先建立一個'}</label>
+        <input type="text" id="nt-name" placeholder="例：高雄 trip 2026">
+        <label>貨幣（呢個 trip 用）</label>
+        <select id="nt-curr"><option value="" disabled selected>揀貨幣…</option>${currencyOptions('')}</select>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" style="margin-top:0" onclick="createTrip()">建立</button>
+          ${ts.length ? `<button class="btn ghost" style="margin-top:0;flex:0 0 auto" onclick="cancelNewTrip()">取消</button>`:''}
+        </div>
+      </div>`;
+    return;
+  }
+  const list = ts.slice().reverse(); // 新→舊
+  el.innerHTML = `
+    <div class="tripsel">
+      <select onchange="selectTrip(this.value)">
+        ${list.map(t=>`<option value="${t.id}" ${t.id===currentTrip?'selected':''}>${esc(t.name)}${t.archived?'（已封存）':''}</option>`).join('')}
+      </select>
+      <button class="btn ghost" onclick="showNewTrip()">＋ 新 trip</button>
+    </div>`;
+}
+function selectTrip(id){ currentTrip=id; localStorage.setItem('currentTrip', id); newTripMode=false; render(); }
+function showNewTrip(){ newTripMode=true; renderTripBar(); }
+function cancelNewTrip(){ newTripMode=false; renderTripBar(); }
+async function createTrip(){
+  const name = document.getElementById('nt-name').value.trim();
+  const currency = document.getElementById('nt-curr').value;
+  if (!name){ alert('請輸入 trip 名'); return; }
+  if (!currency){ alert('請揀貨幣'); return; }
+  const res = await api('addTrip', {name, currency});
+  if (!res.ok){ alert('建立失敗：' + res.error); return; }
+  currentTrip = res.data.id; localStorage.setItem('currentTrip', currentTrip); newTripMode=false;
+  await load();
+}
+
 // ---- render ----
 function render(){
+  renderTripBar();
   const v = document.getElementById('view');
   if (API_URL.indexOf('PASTE_YOUR') === 0){
     v.innerHTML = `<div class="banner">未設定 API：請跟 <b>SETUP.md</b> 部署 Apps Script，再把 <code>index.html</code> 頂部嘅 <code>API_URL</code> 換成你嘅 Web App URL。</div>`;
@@ -158,6 +225,7 @@ function render(){
 }
 
 function renderAdd(v){
+  if (!currentTrip){ v.innerHTML = `<div class="card"><div class="empty">未有 trip — 喺上面建立一個先 👆</div></div>`; return; }
   const editing = editingId ? state.expenses.find(e=>e.id===editingId) : null;
   const cats = categories();
   const fams = activeFamilies();
@@ -165,6 +233,7 @@ function renderAdd(v){
   const parts = editing ? editing.participants : fams.map(f=>f.id);
   v.innerHTML = `
     <div class="card">
+      ${fams.length ? '' : `<div class="banner">未有家庭 — 去 ⚙️設定 新增家庭先可以入數。</div>`}
       ${editing ? `<div class="muted" style="margin-bottom:8px">✏️ 修改開支 <button class="btn ghost" onclick="editingId=null;render()">取消</button></div>` : ''}
       <label>日期</label>
       <input type="date" id="f-date" value="${editing ? editing.date : todayStr()}">
@@ -172,7 +241,7 @@ function renderAdd(v){
       <select id="f-cat">${cats.map(c=>`<option ${editing&&editing.category===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
       <label>邊個俾錢</label>
       <select id="f-payer">${fams.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join('')}</select>
-      <label>金額（${esc(state.config.currency||'')}）</label>
+      <label>金額（${esc(tripCurrency())}）</label>
       <input type="number" id="f-amt" inputmode="decimal" step="0.01" min="0" placeholder="0" value="${editing?editing.amount:''}">
       <label>邊幾家有份分（點揀）</label>
       <div class="chips" id="f-parts">
@@ -191,12 +260,13 @@ async function submitExpense(){
   const amount = parseFloat(document.getElementById('f-amt').value);
   const note = document.getElementById('f-note').value.trim();
   const participants = [...document.querySelectorAll('#f-parts .chip.on')].map(c=>c.dataset.id);
+  if (!currentTrip){ alert('請先揀一個 trip'); return; }
   if (!date || !payer){ alert('請填日期同俾錢家庭'); return; }
   if (!(amount>0)){ alert('請填正確金額'); return; }
   if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
   const ok = editingId
-    ? await write('updateExpense', {id:editingId, date, category, payer, amount, participants, note})
-    : await write('addExpense', {date, category, payer, amount, participants, note});
+    ? await write('updateExpense', {id:editingId, date, category, payer, amount, participants, note, trip:currentTrip})
+    : await write('addExpense', {date, category, payer, amount, participants, note, trip:currentTrip});
   if (ok){ editingId=null; if(currentTab==='add') renderAdd(document.getElementById('view')); alert('已記低！'); }
 }
 
@@ -209,7 +279,7 @@ function editExpense(id){
 async function delExpense(id){ if(confirm('確定刪除呢筆數？')) await write('deleteExpense',{id}); }
 
 function renderList(v){
-  let list = state.expenses.filter(e=>!e.deleted);
+  let list = tripExpenses().filter(e=>!e.deleted);
   if (filters.fam) list = list.filter(e=>e.payer===filters.fam || e.participants.includes(filters.fam));
   if (filters.cat) list = list.filter(e=>e.category===filters.cat);
   list.sort((a,b)=> (a.date<b.date?1:a.date>b.date?-1:(a.createdAt<b.createdAt?1:-1)));
@@ -240,18 +310,21 @@ function renderList(v){
             <div class="acts"><button onclick="editExpense('${e.id}')">改</button><button onclick="delExpense('${e.id}')">刪</button></div>
           </div>
           <div class="amt">${fmt(e.amount)}</div>
-        </div>`).join('') : '<div class="empty">未有開支</div>'}
+        </div>`).join('') : '<div class="empty">呢個 trip 未有開支</div>'}
     </div>`;
 }
 
 function renderSettle(v){
-  const { nets, transfers } = settleDebts(state.expenses, state.families);
-  const fams = state.families.filter(f=> nets[f.id] !== undefined && (f.active || Math.abs(nets[f.id])>0.005));
+  const te = tripExpenses();
+  const { nets, transfers } = settleDebts(te, state.families);
+  const involved = new Set();
+  te.filter(e=>!e.deleted).forEach(e=>{ involved.add(e.payer); (e.participants||[]).forEach(p=>involved.add(p)); });
+  const fams = state.families.filter(f=> involved.has(f.id) || Math.abs(nets[f.id]||0)>0.005);
   v.innerHTML = `
     <div class="card">
       <div class="muted" style="margin-bottom:6px">每家淨額（正=應收返，負=要俾）</div>
-      ${fams.map(f=>{ const n=nets[f.id]||0; const c=n>0?'pos':n<0?'neg':'';
-        return `<div class="net">${esc(f.name)}<b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('')}
+      ${fams.length ? fams.map(f=>{ const n=nets[f.id]||0; const c=n>0?'pos':n<0?'neg':'';
+        return `<div class="net">${esc(f.name)}<b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('') : '<div class="empty">未有開支</div>'}
     </div>
     <div class="card">
       <div class="muted" style="margin-bottom:10px">點樣過數（最少筆數）</div>
@@ -262,14 +335,18 @@ function renderSettle(v){
 }
 
 function renderSettings(v){
-  const c = state.config.currency || '';
-  const currOpts = `<optgroup label="常用">${PINNED.map(([k,n])=>`<option value="${k}" ${c===k?'selected':''}>${k} ${n}</option>`).join('')}</optgroup>
-    <optgroup label="全部">${ALL.map(([k,n])=>`<option value="${k}" ${c===k?'selected':''}>${k} — ${n}</option>`).join('')}</optgroup>`;
+  const t = currentTripObj();
   v.innerHTML = `
     <div class="card">
-      <label>貨幣（全程一種）</label>
-      <select id="s-curr" onchange="setCurrency(this.value)">${c && !PINNED.concat(ALL).some(x=>x[0]===c)?`<option selected>${esc(c)}</option>`:''}${currOpts}</select>
-      <div class="muted" style="margin-top:6px">而家：${esc(c||'未設定')} · 例 ${fmt(1234)}</div>
+      <label>目前 trip</label>
+      ${t ? `
+        <input type="text" id="s-tripname" value="${esc(t.name)}">
+        <button class="btn sec" onclick="saveTripName()">改 trip 名</button>
+        <label>貨幣（呢個 trip）</label>
+        <select onchange="setTripCurrency(this.value)">${currencyOptions(t.currency)}</select>
+        <div class="muted" style="margin-top:6px">而家：${esc(t.currency||'未設定')} · 例 ${fmt(1234)}</div>
+        <button class="btn ghost" style="margin-top:14px" onclick="toggleArchive()">${t.archived?'取消封存':'封存呢個 trip'}</button>
+      ` : `<div class="muted">未揀 trip — 喺頂部建立一個</div>`}
     </div>
     <div class="card">
       <label>我係邊家（記喺呢部手機，入數時預設）</label>
@@ -279,12 +356,12 @@ function renderSettings(v){
       </select>
     </div>
     <div class="card">
-      <label>類別（逗號分隔）</label>
+      <label>類別（逗號分隔，全部 trip 共用）</label>
       <input type="text" id="s-cats" value="${esc(state.config.categories||'')}">
       <button class="btn sec" onclick="saveCats()">儲存類別</button>
     </div>
     <div class="card">
-      <label>家庭</label>
+      <label>家庭（全部 trip 共用）</label>
       ${state.families.map(f=>`
         <div class="fam">
           <span class="name ${f.active?'':'muted'}">${esc(f.name)}${f.active?'':'（已停用）'}</span>
@@ -294,7 +371,9 @@ function renderSettings(v){
       <button class="btn sec" onclick="addFam()">＋ 新增家庭</button>
     </div>`;
 }
-async function setCurrency(v){ await write('setConfig',{key:'currency', value:v}); }
+async function saveTripName(){ const n=document.getElementById('s-tripname').value.trim(); if(n) await write('updateTrip',{id:currentTrip, name:n}); }
+async function setTripCurrency(c){ await write('updateTrip',{id:currentTrip, currency:c}); }
+async function toggleArchive(){ const t=currentTripObj(); if(t) await write('updateTrip',{id:currentTrip, archived:!t.archived}); }
 async function saveCats(){ await write('setConfig',{key:'categories', value:document.getElementById('s-cats').value}); }
 async function addFam(){ const n=prompt('新家庭名稱：'); if(n&&n.trim()) await write('addFamily',{name:n.trim()}); }
 async function renameFam(id){ const n=prompt('改名：', famName(id)); if(n&&n.trim()) await write('renameFamily',{id, name:n.trim()}); }

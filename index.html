@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>旅行分帳</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --text:#1c1e21; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --accent-soft:#dbeafe; --pos:#16a34a; --neg:#dc2626; --shadow:0 1px 3px rgba(0,0,0,.08);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#16181c; --card:#22262e; --text:#e7e9ee; --muted:#9aa1ac; --line:#333944;
+      --accent:#60a5fa; --accent-soft:#1e3a5f; --pos:#4ade80; --neg:#f87171; --shadow:0 1px 3px rgba(0,0,0,.4); }
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body{ margin:0; font-family:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
+    background:var(--bg); color:var(--text); font-size:16px; line-height:1.5; }
+  .wrap{ max-width:640px; margin:0 auto; padding:16px 16px 96px; }
+  h1{ font-size:20px; margin:4px 0 16px; display:flex; align-items:center; gap:8px; }
+  h1 .refresh{ margin-left:auto; font-size:14px; font-weight:400; background:none; border:1px solid var(--line);
+    color:var(--muted); padding:6px 10px; border-radius:8px; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:var(--shadow); }
+  label{ display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  label:first-child{ margin-top:0; }
+  input,select,textarea,button{ font:inherit; color:inherit; }
+  input,select,textarea{ width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); }
+  input[type=number]{ -moz-appearance:textfield; }
+  .btn{ background:var(--accent); color:#fff; border:none; padding:13px; border-radius:11px; width:100%;
+    font-weight:600; font-size:16px; margin-top:16px; }
+  .btn.sec{ background:var(--accent-soft); color:var(--accent); }
+  .btn.ghost{ background:none; border:1px solid var(--line); color:var(--muted); margin-top:0; padding:8px 12px; width:auto; font-size:14px; font-weight:500; }
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; }
+  .chip{ display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line);
+    border-radius:20px; background:var(--bg); font-size:14px; user-select:none; }
+  .chip.on{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .row{ display:flex; gap:10px; }
+  .row>*{ flex:1; }
+  .exp{ display:flex; align-items:flex-start; gap:12px; padding:12px 0; border-bottom:1px solid var(--line); }
+  .exp:last-child{ border-bottom:none; }
+  .exp .amt{ margin-left:auto; font-weight:700; white-space:nowrap; }
+  .exp .meta{ font-size:13px; color:var(--muted); }
+  .cat{ font-size:12px; background:var(--accent-soft); color:var(--accent); padding:2px 8px; border-radius:6px; }
+  .acts{ display:flex; gap:8px; margin-top:6px; }
+  .acts button{ background:none; border:none; color:var(--muted); font-size:13px; padding:0; text-decoration:underline; }
+  .net{ display:flex; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); }
+  .net:last-child{ border-bottom:none; }
+  .net b{ margin-left:auto; }
+  .pos{ color:var(--pos); } .neg{ color:var(--neg); }
+  .pay{ display:flex; align-items:center; gap:8px; padding:14px; background:var(--accent-soft); border-radius:12px; margin-bottom:10px; }
+  .pay .big{ font-weight:700; font-size:18px; margin-left:auto; }
+  .fam{ display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .fam:last-child{ border-bottom:none; }
+  .fam .name{ flex:1; }
+  .muted{ color:var(--muted); font-size:14px; }
+  .empty{ text-align:center; color:var(--muted); padding:32px 0; }
+  nav{ position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line);
+    display:flex; padding-bottom:env(safe-area-inset-bottom); }
+  nav button{ flex:1; background:none; border:none; padding:10px 0; color:var(--muted); font-size:12px;
+    display:flex; flex-direction:column; align-items:center; gap:3px; }
+  nav button.on{ color:var(--accent); }
+  nav .ic{ font-size:20px; }
+  .banner{ background:#fef3c7; color:#92400e; padding:12px 14px; border-radius:10px; font-size:14px; margin-bottom:12px; }
+  @media (prefers-color-scheme: dark){ .banner{ background:#3a2f16; color:#fbbf24; } }
+  select[multiple]{ height:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span id="title">旅行分帳</span><button class="refresh" onclick="load()">↻ 刷新</button></h1>
+  <div id="view"></div>
+</div>
+<nav>
+  <button data-tab="add" class="on" onclick="go('add')"><span class="ic">➕</span>入數</button>
+  <button data-tab="list" onclick="go('list')"><span class="ic">📋</span>清單</button>
+  <button data-tab="settle" onclick="go('settle')"><span class="ic">💰</span>結算</button>
+  <button data-tab="settings" onclick="go('settings')"><span class="ic">⚙️</span>設定</button>
+</nav>
+
+<script src="settlement.js"></script>
+<script>
+// ⚠️ 部署後把下面換成你嘅 Apps Script Web App URL（見 SETUP.md）
+const API_URL = "PASTE_YOUR_WEB_APP_URL_HERE";
+
+const PINNED = [['USD','美金'],['CNY','人民幣'],['HKD','港幣'],['JPY','日元'],['TWD','台幣']];
+const ALL = [['AED','UAE Dirham'],['AUD','Australian Dollar'],['CAD','Canadian Dollar'],['CHF','Swiss Franc'],
+  ['EUR','Euro'],['GBP','British Pound'],['IDR','Indonesian Rupiah'],['INR','Indian Rupee'],['KRW','South Korean Won'],
+  ['MOP','Macanese Pataca'],['MYR','Malaysian Ringgit'],['NZD','New Zealand Dollar'],['PHP','Philippine Peso'],
+  ['SGD','Singapore Dollar'],['THB','Thai Baht'],['VND','Vietnamese Dong'],['BRL','Brazilian Real'],
+  ['CZK','Czech Koruna'],['DKK','Danish Krone'],['EGP','Egyptian Pound'],['HUF','Hungarian Forint'],
+  ['ILS','Israeli Shekel'],['ISK','Icelandic Krona'],['MXN','Mexican Peso'],['NOK','Norwegian Krone'],
+  ['PLN','Polish Zloty'],['RUB','Russian Ruble'],['SAR','Saudi Riyal'],['SEK','Swedish Krona'],
+  ['TRY','Turkish Lira'],['ZAR','South African Rand'],['LKR','Sri Lankan Rupee'],['NPR','Nepalese Rupee'],
+  ['KHR','Cambodian Riel'],['LAK','Lao Kip'],['MMK','Myanmar Kyat'],['BND','Brunei Dollar'],['MNT','Mongolian Tugrik']];
+const SYMBOL = {USD:'$',CNY:'¥',HKD:'HK$',JPY:'¥',TWD:'NT$',KRW:'₩',EUR:'€',GBP:'£',AUD:'A$',CAD:'C$',
+  SGD:'S$',THB:'฿',MYR:'RM',PHP:'₱',VND:'₫',INR:'₹',NZD:'NZ$',MOP:'MOP$',IDR:'Rp',CHF:'CHF '};
+const ZERO_DEC = new Set(['JPY','TWD','KRW','VND','HUF','CLP','ISK','MMK','LAK','KHR','IDR','MNT']);
+
+let state = { config:{}, families:[], expenses:[] };
+let currentTab = 'add';
+let editingId = null;
+let filters = { fam:'', cat:'' };
+
+async function api(action, payload){
+  if (action === 'bootstrap'){
+    const r = await fetch(API_URL + '?action=bootstrap');
+    return await r.json();
+  }
+  const r = await fetch(API_URL, { method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify(Object.assign({action}, payload)) });
+  return await r.json();
+}
+
+async function load(){
+  if (API_URL.indexOf('PASTE_YOUR') === 0){ render(); return; }
+  try{
+    const res = await api('bootstrap');
+    if (!res.ok) throw res.error;
+    state = res.data;
+  }catch(e){ alert('載入失敗：' + e); }
+  render();
+}
+
+async function write(action, payload){
+  const res = await api(action, payload);
+  if (!res.ok){ alert('儲存失敗：' + res.error); return false; }
+  await load();
+  return true;
+}
+
+// ---- helpers ----
+function activeFamilies(){ return state.families.filter(f=>f.active); }
+function famName(id){ const f = state.families.find(x=>x.id===id); return f ? f.name : id; }
+function categories(){ return (state.config.categories||'其他').split(',').map(s=>s.trim()).filter(Boolean); }
+function todayStr(){ const d=new Date(); const l=new Date(d.getTime()-d.getTimezoneOffset()*60000); return l.toISOString().slice(0,10); }
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function symbol(){ const c=state.config.currency||''; return SYMBOL[c] || (c ? c+' ' : '$'); }
+function fmt(n){ const c=state.config.currency||''; const d=ZERO_DEC.has(c)?0:2;
+  return symbol() + Number(n).toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }
+function myFamily(){ return localStorage.getItem('myFamily') || ''; }
+
+function go(tab){
+  currentTab = tab; editingId = null;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
+  if (tab==='list' || tab==='settle') load(); else render();
+}
+
+// ---- render ----
+function render(){
+  const v = document.getElementById('view');
+  if (API_URL.indexOf('PASTE_YOUR') === 0){
+    v.innerHTML = `<div class="banner">未設定 API：請跟 <b>SETUP.md</b> 部署 Apps Script，再把 <code>index.html</code> 頂部嘅 <code>API_URL</code> 換成你嘅 Web App URL。</div>`;
+    return;
+  }
+  ({add:renderAdd, list:renderList, settle:renderSettle, settings:renderSettings}[currentTab])(v);
+}
+
+function renderAdd(v){
+  const editing = editingId ? state.expenses.find(e=>e.id===editingId) : null;
+  const cats = categories();
+  const fams = activeFamilies();
+  const sel = editing ? editing.payer : (myFamily() || (fams[0]&&fams[0].id) || '');
+  const parts = editing ? editing.participants : fams.map(f=>f.id);
+  v.innerHTML = `
+    <div class="card">
+      ${editing ? `<div class="muted" style="margin-bottom:8px">✏️ 修改開支 <button class="btn ghost" onclick="editingId=null;render()">取消</button></div>` : ''}
+      <label>日期</label>
+      <input type="date" id="f-date" value="${editing ? editing.date : todayStr()}">
+      <label>類別</label>
+      <select id="f-cat">${cats.map(c=>`<option ${editing&&editing.category===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+      <label>邊個俾錢</label>
+      <select id="f-payer">${fams.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join('')}</select>
+      <label>金額（${esc(state.config.currency||'')}）</label>
+      <input type="number" id="f-amt" inputmode="decimal" step="0.01" min="0" placeholder="0" value="${editing?editing.amount:''}">
+      <label>邊幾家有份分（點揀）</label>
+      <div class="chips" id="f-parts">
+        ${fams.map(f=>`<span class="chip ${parts.includes(f.id)?'on':''}" data-id="${f.id}" onclick="this.classList.toggle('on')">${esc(f.name)}</span>`).join('')}
+      </div>
+      <label>備註（可留空）</label>
+      <input type="text" id="f-note" value="${editing?esc(editing.note):''}" placeholder="例：民宿兩晚">
+      <button class="btn" onclick="submitExpense()">${editing?'更新':'記低'}</button>
+    </div>`;
+}
+
+async function submitExpense(){
+  const date = document.getElementById('f-date').value;
+  const category = document.getElementById('f-cat').value;
+  const payer = document.getElementById('f-payer').value;
+  const amount = parseFloat(document.getElementById('f-amt').value);
+  const note = document.getElementById('f-note').value.trim();
+  const participants = [...document.querySelectorAll('#f-parts .chip.on')].map(c=>c.dataset.id);
+  if (!date || !payer){ alert('請填日期同俾錢家庭'); return; }
+  if (!(amount>0)){ alert('請填正確金額'); return; }
+  if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
+  const ok = editingId
+    ? await write('updateExpense', {id:editingId, date, category, payer, amount, participants, note})
+    : await write('addExpense', {date, category, payer, amount, participants, note});
+  if (ok){ editingId=null; if(currentTab==='add') renderAdd(document.getElementById('view')); alert('已記低！'); }
+}
+
+function editExpense(id){
+  editingId=id; currentTab='add';
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab==='add'));
+  render();
+  window.scrollTo(0,0);
+}
+async function delExpense(id){ if(confirm('確定刪除呢筆數？')) await write('deleteExpense',{id}); }
+
+function renderList(v){
+  let list = state.expenses.filter(e=>!e.deleted);
+  if (filters.fam) list = list.filter(e=>e.payer===filters.fam || e.participants.includes(filters.fam));
+  if (filters.cat) list = list.filter(e=>e.category===filters.cat);
+  list.sort((a,b)=> (a.date<b.date?1:a.date>b.date?-1:(a.createdAt<b.createdAt?1:-1)));
+  const total = list.reduce((s,e)=>s+e.amount,0);
+  const cats = categories();
+  v.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div><label>家庭</label>
+          <select onchange="filters.fam=this.value;render()">
+            <option value="">全部</option>
+            ${state.families.map(f=>`<option value="${f.id}" ${filters.fam===f.id?'selected':''}>${esc(f.name)}</option>`).join('')}
+          </select></div>
+        <div><label>類別</label>
+          <select onchange="filters.cat=this.value;render()">
+            <option value="">全部</option>
+            ${cats.map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="muted" style="margin-top:10px">共 ${list.length} 筆 · 合計 ${fmt(total)}</div>
+    </div>
+    <div class="card">
+      ${list.length ? list.map(e=>`
+        <div class="exp">
+          <div>
+            <div><span class="cat">${esc(e.category)}</span> <b>${esc(famName(e.payer))}</b> 俾</div>
+            <div class="meta">${e.date} · 分：${e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}</div>
+            <div class="acts"><button onclick="editExpense('${e.id}')">改</button><button onclick="delExpense('${e.id}')">刪</button></div>
+          </div>
+          <div class="amt">${fmt(e.amount)}</div>
+        </div>`).join('') : '<div class="empty">未有開支</div>'}
+    </div>`;
+}
+
+function renderSettle(v){
+  const { nets, transfers } = settleDebts(state.expenses, state.families);
+  const fams = state.families.filter(f=> nets[f.id] !== undefined && (f.active || Math.abs(nets[f.id])>0.005));
+  v.innerHTML = `
+    <div class="card">
+      <div class="muted" style="margin-bottom:6px">每家淨額（正=應收返，負=要俾）</div>
+      ${fams.map(f=>{ const n=nets[f.id]||0; const c=n>0?'pos':n<0?'neg':'';
+        return `<div class="net">${esc(f.name)}<b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('')}
+    </div>
+    <div class="card">
+      <div class="muted" style="margin-bottom:10px">點樣過數（最少筆數）</div>
+      ${transfers.length ? transfers.map(t=>`
+        <div class="pay"><b>${esc(famName(t.from))}</b> 俾 <b>${esc(famName(t.to))}</b><span class="big">${fmt(t.amount)}</span></div>
+      `).join('') : '<div class="empty">大家啱數，唔使過數 🎉</div>'}
+    </div>`;
+}
+
+function renderSettings(v){
+  const c = state.config.currency || '';
+  const currOpts = `<optgroup label="常用">${PINNED.map(([k,n])=>`<option value="${k}" ${c===k?'selected':''}>${k} ${n}</option>`).join('')}</optgroup>
+    <optgroup label="全部">${ALL.map(([k,n])=>`<option value="${k}" ${c===k?'selected':''}>${k} — ${n}</option>`).join('')}</optgroup>`;
+  v.innerHTML = `
+    <div class="card">
+      <label>貨幣（全程一種）</label>
+      <select id="s-curr" onchange="setCurrency(this.value)">${c && !PINNED.concat(ALL).some(x=>x[0]===c)?`<option selected>${esc(c)}</option>`:''}${currOpts}</select>
+      <div class="muted" style="margin-top:6px">而家：${esc(c||'未設定')} · 例 ${fmt(1234)}</div>
+    </div>
+    <div class="card">
+      <label>我係邊家（記喺呢部手機，入數時預設）</label>
+      <select onchange="localStorage.setItem('myFamily', this.value)">
+        <option value="">未揀</option>
+        ${activeFamilies().map(f=>`<option value="${f.id}" ${myFamily()===f.id?'selected':''}>${esc(f.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="card">
+      <label>類別（逗號分隔）</label>
+      <input type="text" id="s-cats" value="${esc(state.config.categories||'')}">
+      <button class="btn sec" onclick="saveCats()">儲存類別</button>
+    </div>
+    <div class="card">
+      <label>家庭</label>
+      ${state.families.map(f=>`
+        <div class="fam">
+          <span class="name ${f.active?'':'muted'}">${esc(f.name)}${f.active?'':'（已停用）'}</span>
+          <button class="btn ghost" onclick="renameFam('${f.id}')">改名</button>
+          <button class="btn ghost" onclick="toggleFam('${f.id}',${!f.active})">${f.active?'停用':'啟用'}</button>
+        </div>`).join('')}
+      <button class="btn sec" onclick="addFam()">＋ 新增家庭</button>
+    </div>`;
+}
+async function setCurrency(v){ await write('setConfig',{key:'currency', value:v}); }
+async function saveCats(){ await write('setConfig',{key:'categories', value:document.getElementById('s-cats').value}); }
+async function addFam(){ const n=prompt('新家庭名稱：'); if(n&&n.trim()) await write('addFamily',{name:n.trim()}); }
+async function renameFam(id){ const n=prompt('改名：', famName(id)); if(n&&n.trim()) await write('renameFamily',{id, name:n.trim()}); }
+async function toggleFam(id, active){ await write('setFamilyActive',{id, active}); }
+
+window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') load(); });
+load();
+</script>
+</body>
+</html>

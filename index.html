@@ -107,6 +107,7 @@ let newTripMode = false;
 let editingId = null;
 let filters = { fam:'', cat:'' };
 
+// ---- 通用資料層（配合通用 Code.gs） ----
 async function api(action, payload){
   if (action === 'bootstrap'){
     const r = await fetch(API_URL + '?action=bootstrap');
@@ -117,23 +118,37 @@ async function api(action, payload){
     body: JSON.stringify(Object.assign({action}, payload)) });
   return await r.json();
 }
+function apiAppend(sheet, values){ return api('append', {sheet, values}); }
+function apiUpdate(sheet, id, values, idField){ return api('update', {sheet, id, values, idField: idField||'id'}); }
+async function commit(promise){ const res = await promise; if(!res.ok){ alert('儲存失敗：' + res.error); return false; } await load(); return true; }
+
+function truthy(v){ return v === true || String(v).toUpperCase() === 'TRUE'; }
+function fromSheets(sh){
+  const cfg = {};
+  (sh.Config||[]).forEach(r=>{ if(r.key!==undefined && r.key!=='') cfg[String(r.key)] = (r.value==null?'':String(r.value)); });
+  return {
+    config: cfg,
+    families: (sh.Families||[]).map(f=>({ id:String(f.id), name:String(f.name==null?'':f.name),
+      active: !(f.active === false || String(f.active).toUpperCase() === 'FALSE') })),
+    trips: (sh.Trips||[]).map(t=>({ id:String(t.id), name:String(t.name==null?'':t.name),
+      currency:String(t.currency||''), archived: truthy(t.archived) })),
+    expenses: (sh.Expenses||[]).map(e=>({ id:String(e.id), date:String(e.date||''), category:String(e.category||''),
+      payer:String(e.payer||''), amount:Number(e.amount)||0,
+      participants:String(e.participants||'').split(',').filter(Boolean),
+      note:String(e.note==null?'':e.note), createdAt:String(e.createdAt||''),
+      deleted: truthy(e.deleted), trip:String(e.trip||'') }))
+  };
+}
 
 async function load(){
   if (API_URL.indexOf('PASTE_YOUR') === 0){ render(); return; }
   try{
     const res = await api('bootstrap');
     if (!res.ok) throw res.error;
-    state = res.data;
+    state = fromSheets(res.data.sheets || {});
   }catch(e){ alert('載入失敗：' + e); }
   ensureCurrentTrip();
   render();
-}
-
-async function write(action, payload){
-  const res = await api(action, payload);
-  if (!res.ok){ alert('儲存失敗：' + res.error); return false; }
-  await load();
-  return true;
 }
 
 // ---- helpers ----
@@ -207,9 +222,10 @@ async function createTrip(){
   const currency = document.getElementById('nt-curr').value;
   if (!name){ alert('請輸入 trip 名'); return; }
   if (!currency){ alert('請揀貨幣'); return; }
-  const res = await api('addTrip', {name, currency});
+  const id = 't' + Date.now();
+  const res = await apiAppend('Trips', {id, name, currency, archived:'FALSE'});
   if (!res.ok){ alert('建立失敗：' + res.error); return; }
-  currentTrip = res.data.id; localStorage.setItem('currentTrip', currentTrip); newTripMode=false;
+  currentTrip = id; localStorage.setItem('currentTrip', id); newTripMode=false;
   await load();
 }
 
@@ -264,9 +280,11 @@ async function submitExpense(){
   if (!date || !payer){ alert('請填日期同俾錢家庭'); return; }
   if (!(amount>0)){ alert('請填正確金額'); return; }
   if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
+  const parts = participants.join(',');
   const ok = editingId
-    ? await write('updateExpense', {id:editingId, date, category, payer, amount, participants, note, trip:currentTrip})
-    : await write('addExpense', {date, category, payer, amount, participants, note, trip:currentTrip});
+    ? await commit(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip}))
+    : await commit(apiAppend('Expenses', {id:'e'+Date.now(), date, category, payer, amount, participants:parts, note,
+        createdAt:new Date().toISOString(), deleted:'FALSE', trip:currentTrip}));
   if (ok){ editingId=null; if(currentTab==='add') renderAdd(document.getElementById('view')); alert('已記低！'); }
 }
 
@@ -276,7 +294,7 @@ function editExpense(id){
   render();
   window.scrollTo(0,0);
 }
-async function delExpense(id){ if(confirm('確定刪除呢筆數？')) await write('deleteExpense',{id}); }
+async function delExpense(id){ if(confirm('確定刪除呢筆數？')) await commit(apiUpdate('Expenses', id, {deleted:'TRUE'})); }
 
 function renderList(v){
   let list = tripExpenses().filter(e=>!e.deleted);
@@ -371,13 +389,13 @@ function renderSettings(v){
       <button class="btn sec" onclick="addFam()">＋ 新增家庭</button>
     </div>`;
 }
-async function saveTripName(){ const n=document.getElementById('s-tripname').value.trim(); if(n) await write('updateTrip',{id:currentTrip, name:n}); }
-async function setTripCurrency(c){ await write('updateTrip',{id:currentTrip, currency:c}); }
-async function toggleArchive(){ const t=currentTripObj(); if(t) await write('updateTrip',{id:currentTrip, archived:!t.archived}); }
-async function saveCats(){ await write('setConfig',{key:'categories', value:document.getElementById('s-cats').value}); }
-async function addFam(){ const n=prompt('新家庭名稱：'); if(n&&n.trim()) await write('addFamily',{name:n.trim()}); }
-async function renameFam(id){ const n=prompt('改名：', famName(id)); if(n&&n.trim()) await write('renameFamily',{id, name:n.trim()}); }
-async function toggleFam(id, active){ await write('setFamilyActive',{id, active}); }
+async function saveTripName(){ const n=document.getElementById('s-tripname').value.trim(); if(n) await commit(apiUpdate('Trips', currentTrip, {name:n})); }
+async function setTripCurrency(c){ await commit(apiUpdate('Trips', currentTrip, {currency:c})); }
+async function toggleArchive(){ const t=currentTripObj(); if(t) await commit(apiUpdate('Trips', currentTrip, {archived: t.archived?'FALSE':'TRUE'})); }
+async function saveCats(){ await commit(apiUpdate('Config', 'categories', {value:document.getElementById('s-cats').value}, 'key')); }
+async function addFam(){ const n=prompt('新家庭名稱：'); if(n&&n.trim()) await commit(apiAppend('Families', {id:'f'+Date.now(), name:n.trim(), active:'TRUE'})); }
+async function renameFam(id){ const n=prompt('改名：', famName(id)); if(n&&n.trim()) await commit(apiUpdate('Families', id, {name:n.trim()})); }
+async function toggleFam(id, active){ await commit(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
 window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') load(); });
 load();

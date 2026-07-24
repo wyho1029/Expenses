@@ -66,14 +66,19 @@
   nav .ic{ font-size:20px; }
   .banner{ background:#fef3c7; color:#92400e; padding:12px 14px; border-radius:10px; font-size:14px; margin-bottom:12px; }
   @media (prefers-color-scheme: dark){ .banner{ background:#3a2f16; color:#fbbf24; } }
+  .toast{ position:fixed; left:50%; bottom:84px; transform:translateX(-50%) translateY(16px); background:#111827; color:#fff;
+    padding:10px 18px; border-radius:22px; font-size:14px; opacity:0; pointer-events:none; transition:.22s; z-index:50; box-shadow:0 4px 14px rgba(0,0,0,.35); }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+  @media (prefers-color-scheme: dark){ .toast{ background:#e7e9ee; color:#16181c; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1><span id="title">旅行分帳</span><button class="refresh" onclick="load()">↻ 刷新</button></h1>
   <div id="tripbar"></div>
-  <div id="view"></div>
+  <div id="view"><div class="empty">載入中…</div></div>
 </div>
+<div id="toast" class="toast"></div>
 <nav>
   <button data-tab="add" class="on" onclick="go('add')"><span class="ic">➕</span>入數</button>
   <button data-tab="list" onclick="go('list')"><span class="ic">📋</span>清單</button>
@@ -120,7 +125,26 @@ async function api(action, payload){
 }
 function apiAppend(sheet, values){ return api('append', {sheet, values}); }
 function apiUpdate(sheet, id, values, idField){ return api('update', {sheet, id, values, idField: idField||'id'}); }
-async function commit(promise){ const res = await promise; if(!res.ok){ alert('儲存失敗：' + res.error); return false; } await load(); return true; }
+
+let pending = 0, refreshing = false, toastTimer = null;
+// 背景寫入：唔阻 UI，失敗先彈警告並同步返最新
+function bgWrite(promise){
+  pending++;
+  Promise.resolve(promise).then(res=>{
+    pending--;
+    if (!res || !res.ok){ alert('儲存失敗（已同步返最新）：' + (res && res.error)); load(); }
+  }).catch(e=>{ pending--; alert('儲存失敗（已同步返最新）：' + e); load(); });
+}
+// 背景靜默重新載入（唔阻 UI；有未完成寫入時跳過，避免衝突）
+async function refresh(){
+  if (pending > 0 || refreshing) return;
+  refreshing = true;
+  try{ const res = await api('bootstrap'); if (res.ok){ state = fromSheets(res.data.sheets||{}); ensureCurrentTrip(); render(); } }
+  catch(e){}
+  finally{ refreshing = false; }
+}
+function toast(msg){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'), 1600); }
 
 function truthy(v){ return v === true || String(v).toUpperCase() === 'TRUE'; }
 function fromSheets(sh){
@@ -183,7 +207,8 @@ function currencyOptions(sel){
 function go(tab){
   currentTab = tab; editingId = null; newTripMode = false;
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
-  if (tab==='list' || tab==='settle') load(); else render();
+  render();                                       // 即時（用快取，唔等網路）
+  if (tab==='list' || tab==='settle') refresh();  // 背景攞最新
 }
 
 // ---- trip bar ----
@@ -217,16 +242,17 @@ function renderTripBar(){
 function selectTrip(id){ currentTrip=id; localStorage.setItem('currentTrip', id); newTripMode=false; render(); }
 function showNewTrip(){ newTripMode=true; renderTripBar(); }
 function cancelNewTrip(){ newTripMode=false; renderTripBar(); }
-async function createTrip(){
+function createTrip(){
   const name = document.getElementById('nt-name').value.trim();
   const currency = document.getElementById('nt-curr').value;
   if (!name){ alert('請輸入 trip 名'); return; }
   if (!currency){ alert('請揀貨幣'); return; }
   const id = 't' + Date.now();
-  const res = await apiAppend('Trips', {id, name, currency, archived:'FALSE'});
-  if (!res.ok){ alert('建立失敗：' + res.error); return; }
+  state.trips.push({id, name, currency, archived:false});
   currentTrip = id; localStorage.setItem('currentTrip', id); newTripMode=false;
-  await load();
+  render();
+  bgWrite(apiAppend('Trips', {id, name, currency, archived:'FALSE'}));
+  toast('已建立 ' + name + ' ✓');
 }
 
 // ---- render ----
@@ -281,11 +307,18 @@ async function submitExpense(){
   if (!(amount>0)){ alert('請填正確金額'); return; }
   if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
   const parts = participants.join(',');
-  const ok = editingId
-    ? await commit(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip}))
-    : await commit(apiAppend('Expenses', {id:'e'+Date.now(), date, category, payer, amount, participants:parts, note,
-        createdAt:new Date().toISOString(), deleted:'FALSE', trip:currentTrip}));
-  if (ok){ editingId=null; if(currentTab==='add') renderAdd(document.getElementById('view')); alert('已記低！'); }
+  if (editingId){
+    const e = state.expenses.find(x=>x.id===editingId);
+    if (e) Object.assign(e, {date, category, payer, amount, participants:participants.slice(), note, trip:currentTrip});
+    bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip}));
+    editingId = null;
+  } else {
+    const id = 'e'+Date.now(), createdAt = new Date().toISOString();
+    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip});
+    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip}));
+  }
+  if (currentTab==='add') renderAdd(document.getElementById('view'));
+  toast('已記低 ✓');
 }
 
 function editExpense(id){
@@ -294,7 +327,13 @@ function editExpense(id){
   render();
   window.scrollTo(0,0);
 }
-async function delExpense(id){ if(confirm('確定刪除呢筆數？')) await commit(apiUpdate('Expenses', id, {deleted:'TRUE'})); }
+function delExpense(id){
+  if(!confirm('確定刪除呢筆數？')) return;
+  const e = state.expenses.find(x=>x.id===id); if(e) e.deleted = true;
+  render();
+  bgWrite(apiUpdate('Expenses', id, {deleted:'TRUE'}));
+  toast('已刪除');
+}
 
 function renderList(v){
   let list = tripExpenses().filter(e=>!e.deleted);
@@ -389,15 +428,15 @@ function renderSettings(v){
       <button class="btn sec" onclick="addFam()">＋ 新增家庭</button>
     </div>`;
 }
-async function saveTripName(){ const n=document.getElementById('s-tripname').value.trim(); if(n) await commit(apiUpdate('Trips', currentTrip, {name:n})); }
-async function setTripCurrency(c){ await commit(apiUpdate('Trips', currentTrip, {currency:c})); }
-async function toggleArchive(){ const t=currentTripObj(); if(t) await commit(apiUpdate('Trips', currentTrip, {archived: t.archived?'FALSE':'TRUE'})); }
-async function saveCats(){ await commit(apiUpdate('Config', 'categories', {value:document.getElementById('s-cats').value}, 'key')); }
-async function addFam(){ const n=prompt('新家庭名稱：'); if(n&&n.trim()) await commit(apiAppend('Families', {id:'f'+Date.now(), name:n.trim(), active:'TRUE'})); }
-async function renameFam(id){ const n=prompt('改名：', famName(id)); if(n&&n.trim()) await commit(apiUpdate('Families', id, {name:n.trim()})); }
-async function toggleFam(id, active){ await commit(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
+function saveTripName(){ const n=document.getElementById('s-tripname').value.trim(); if(!n) return; const t=currentTripObj(); if(t) t.name=n; render(); bgWrite(apiUpdate('Trips', currentTrip, {name:n})); toast('已改名 ✓'); }
+function setTripCurrency(c){ const t=currentTripObj(); if(t) t.currency=c; render(); bgWrite(apiUpdate('Trips', currentTrip, {currency:c})); toast('貨幣：'+c); }
+function toggleArchive(){ const t=currentTripObj(); if(!t) return; t.archived=!t.archived; render(); bgWrite(apiUpdate('Trips', currentTrip, {archived: t.archived?'TRUE':'FALSE'})); }
+function saveCats(){ const v=document.getElementById('s-cats').value; state.config.categories=v; render(); bgWrite(apiUpdate('Config', 'categories', {value:v}, 'key')); toast('已儲存類別 ✓'); }
+function addFam(){ const n=prompt('新家庭名稱：'); if(!(n&&n.trim())) return; const id='f'+Date.now(); state.families.push({id, name:n.trim(), active:true}); render(); bgWrite(apiAppend('Families', {id, name:n.trim(), active:'TRUE'})); toast('已加 '+n.trim()); }
+function renameFam(id){ const n=prompt('改名：', famName(id)); if(!(n&&n.trim())) return; const f=state.families.find(x=>x.id===id); if(f) f.name=n.trim(); render(); bgWrite(apiUpdate('Families', id, {name:n.trim()})); }
+function toggleFam(id, active){ const f=state.families.find(x=>x.id===id); if(f) f.active=active; render(); bgWrite(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
-window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') load(); });
+window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') refresh(); });
 load();
 </script>
 </body>

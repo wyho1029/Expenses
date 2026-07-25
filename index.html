@@ -169,6 +169,7 @@ function toast(msg){ const el=document.getElementById('toast'); el.textContent=m
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'), 1600); }
 
 function truthy(v){ return v === true || String(v).toUpperCase() === 'TRUE'; }
+function parseShares(v){ try{ return v ? JSON.parse(v) : {}; }catch(_){ return {}; } }
 function fromSheets(sh){
   const cfg = {};
   (sh.Config||[]).forEach(r=>{ if(r.key!==undefined && r.key!=='') cfg[String(r.key)] = (r.value==null?'':String(r.value)); });
@@ -183,7 +184,8 @@ function fromSheets(sh){
       participants:String(e.participants||'').split(',').filter(Boolean),
       note:String(e.note==null?'':e.note), createdAt:String(e.createdAt||''),
       deleted: truthy(e.deleted), trip:String(e.trip||''),
-      currency:String(e.currency||''), rate:Number(e.rate)||1 }))
+      currency:String(e.currency||''), rate:Number(e.rate)||1,
+      splitMode:(String(e.splitMode||'')==='custom')?'custom':'family', shares:parseShares(e.shares) }))
   };
 }
 
@@ -351,6 +353,9 @@ function renderAdd(v){
   const ecur = editing ? (editing.currency||base) : base;
   const erate = editing ? (editing.rate||1) : 1;
   const showFx = ecur !== base;
+  const esplit = editing ? (editing.splitMode||'family') : 'family';
+  const initParts = parts;
+  const initShares = editing && editing.shares ? editing.shares : {};
   v.innerHTML = `
     <div class="card">
       ${fams.length ? '' : `<div class="banner">未有家庭 — 去 ⚙️設定 新增家庭先可以入數。</div>`}
@@ -375,14 +380,53 @@ function renderAdd(v){
         <div class="muted" id="f-conv" style="margin-top:6px"></div>
         <div class="muted" id="f-fxinfo" style="margin-top:2px"></div>
       </div>
-      <label>邊幾家有份分（點揀）</label>
-      <div class="chips" id="f-parts">
-        ${fams.map(f=>`<span class="chip ${parts.includes(f.id)?'on':''}" data-id="${f.id}" onclick="this.classList.toggle('on')">${esc(f.name)}</span>`).join('')}
-      </div>
+      <label>分法</label>
+      <select id="f-split" onchange="onSplitChange()">
+        <option value="family" ${esplit==='family'?'selected':''}>按家庭平分</option>
+        <option value="custom" ${esplit==='custom'?'selected':''}>自訂金額（逐家填實數，例如住宿房價唔同）</option>
+      </select>
+      <div id="f-split-area"></div>
       <label>備註（可留空）</label>
       <input type="text" id="f-note" value="${editing?esc(editing.note):''}" placeholder="例：民宿兩晚">
       <button class="btn" onclick="submitExpense()">${editing?'更新':'記低'}</button>
     </div>`;
+  renderSplitArea({parts: initParts, shares: initShares});
+  updateConv();
+}
+
+// 依分法渲染「參與/自訂金額」區；init={parts,shares} 只喺初次用
+function renderSplitArea(init){
+  const area = document.getElementById('f-split-area');
+  const mode = document.getElementById('f-split').value;
+  const fams = activeFamilies();
+  const amtEl = document.getElementById('f-amt');
+  if (mode === 'custom'){
+    amtEl.setAttribute('readonly',''); amtEl.style.opacity = '.6';
+    const vals = (init && init.shares) ? Object.assign({}, init.shares) : {};
+    if (!init){ area.querySelectorAll('.cshare').forEach(i=>{ if(i.value) vals[i.dataset.fam]=i.value; }); }
+    area.innerHTML = `<label style="margin-top:6px">逐家填實際金額（留空 = 嗰家冇份）</label>` +
+      fams.map(f=>`<div class="row" style="align-items:center;gap:8px;margin-bottom:6px">
+        <span style="flex:1">${esc(f.name)}</span>
+        <input type="number" class="cshare" data-fam="${f.id}" inputmode="decimal" step="0.01" min="0" placeholder="0" value="${vals[f.id]!==undefined?vals[f.id]:''}" style="flex:1" oninput="updateCustomTotal()">
+      </div>`).join('') +
+      `<div class="muted" id="f-custom-total" style="margin-top:4px"></div>`;
+    updateCustomTotal();
+  } else {
+    amtEl.removeAttribute('readonly'); amtEl.style.opacity = '1';
+    const parts = (init && init.parts) ? init.parts : fams.map(f=>f.id);
+    area.innerHTML = `<label style="margin-top:6px">邊幾家有份分（點揀）</label>
+      <div class="chips" id="f-parts">
+        ${fams.map(f=>`<span class="chip ${parts.includes(f.id)?'on':''}" data-id="${f.id}" onclick="this.classList.toggle('on')">${esc(f.name)}</span>`).join('')}
+      </div>`;
+  }
+}
+function onSplitChange(){ renderSplitArea(null); }
+function updateCustomTotal(){
+  let sum = 0; document.querySelectorAll('.cshare').forEach(i=>{ sum += parseFloat(i.value)||0; });
+  sum = round2(sum);
+  const amtEl = document.getElementById('f-amt'); if (amtEl) amtEl.value = sum ? sum : '';
+  const cur = (document.getElementById('f-cur')||{}).value || tripCurrency();
+  const t = document.getElementById('f-custom-total'); if (t) t.textContent = '合計：' + fmtC(sum, cur);
   updateConv();
 }
 
@@ -416,27 +460,36 @@ async function submitExpense(){
   const date = document.getElementById('f-date').value;
   const category = document.getElementById('f-cat').value;
   const payer = document.getElementById('f-payer').value;
-  const amount = parseFloat(document.getElementById('f-amt').value);
   const note = document.getElementById('f-note').value.trim();
-  const participants = [...document.querySelectorAll('#f-parts .chip.on')].map(c=>c.dataset.id);
+  const splitMode = (document.getElementById('f-split')||{}).value || 'family';
+  let participants, shares = {}, amount;
+  if (splitMode === 'custom'){
+    document.querySelectorAll('.cshare').forEach(i=>{ const v=parseFloat(i.value); if(v>0) shares[i.dataset.fam]=round2(v); });
+    participants = Object.keys(shares);
+    amount = round2(participants.reduce((s,p)=>s+shares[p], 0));
+  } else {
+    participants = [...document.querySelectorAll('#f-parts .chip.on')].map(c=>c.dataset.id);
+    amount = parseFloat(document.getElementById('f-amt').value);
+  }
   if (!currentTrip){ alert('請先揀一個 trip'); return; }
   if (!date || !payer){ alert('請填日期同俾錢家庭'); return; }
-  if (!(amount>0)){ alert('請填正確金額'); return; }
-  if (!participants.length){ alert('至少揀一個有份嘅家庭'); return; }
+  if (!(amount>0)){ alert(splitMode==='custom' ? '自訂金額：最少要填一家金額' : '請填正確金額'); return; }
+  if (!participants.length){ alert('至少要有一家有份'); return; }
   const base = tripCurrency();
   const currency = (document.getElementById('f-cur') || {}).value || base;
   let rate = 1;
   if (currency !== base){ rate = parseFloat(document.getElementById('f-rate').value); if (!(rate>0)){ alert('請填匯率（1 '+currency+' = ? '+base+'）'); return; } }
   const parts = participants.join(',');
+  const sharesStr = JSON.stringify(shares);
   if (editingId){
     const e = state.expenses.find(x=>x.id===editingId);
-    if (e) Object.assign(e, {date, category, payer, amount, participants:participants.slice(), note, trip:currentTrip, currency, rate});
-    bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip, currency, rate}));
+    if (e) Object.assign(e, {date, category, payer, amount, participants:participants.slice(), note, trip:currentTrip, currency, rate, splitMode, shares});
+    bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip, currency, rate, splitMode, shares:sharesStr}));
     editingId = null;
   } else {
     const id = 'e'+Date.now(), createdAt = new Date().toISOString();
-    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate});
-    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate}));
+    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate, splitMode, shares});
+    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate, splitMode, shares:sharesStr}));
   }
   if (currentTab==='add') renderAdd(document.getElementById('view'));
   toast('已記低 ✓');
@@ -484,7 +537,7 @@ function renderList(v){
         <div class="exp">
           <div>
             <div><span class="cat">${esc(e.category)}</span> <b>${esc(famName(e.payer))}</b> 俾</div>
-            <div class="meta">${e.date} · 分：${e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}</div>
+            <div class="meta">${e.date} · ${e.splitMode==='custom' ? '自訂 · '+e.participants.map(p=>esc(famName(p))+' '+fmtC((e.shares&&e.shares[p])||0, e.currency||tripCurrency())).join('、') : '分：'+e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}</div>
             <div class="acts"><button onclick="editExpense('${e.id}')">改</button><button onclick="delExpense('${e.id}')">刪</button></div>
           </div>
           <div class="amt">${fmtC(e.amount, e.currency||tripCurrency())}${(e.currency && e.currency!==tripCurrency()) ? `<div class="meta" style="text-align:right;font-weight:400;margin-top:2px">≈ ${fmt(baseAmt(e))}</div>` : ''}</div>
@@ -502,7 +555,11 @@ async function ensureHkdRate(base){
 }
 function renderSettle(v){
   const teRaw = tripExpenses();
-  const te = teRaw.map(e=>({ ...e, amount: baseAmt(e) })); // 全部折合主貨幣先結算
+  const te = teRaw.map(e=>{                    // 全部折合主貨幣先結算
+    const m = { ...e, amount: baseAmt(e) };
+    if (e.splitMode==='custom' && e.shares){ const r=e.rate||1; m.shares={}; for(const k in e.shares) m.shares[k]=Number(e.shares[k])*r; }
+    return m;
+  });
   const { nets, transfers } = settleDebts(te, tripFamilies());
   const involved = new Set();
   teRaw.filter(e=>!e.deleted).forEach(e=>{ involved.add(e.payer); (e.participants||[]).forEach(p=>involved.add(p)); });

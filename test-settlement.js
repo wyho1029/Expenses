@@ -53,4 +53,16 @@ const fams = [{id:'f1'},{id:'f2'},{id:'f3'}];
   assert.ok(Math.abs(total - 66.66) < 0.02);
 }
 
+// 6. 自訂金額：住宿 A 俾晒 5000，實數 A2600/B1500/C900
+{
+  const exp = [{payer:'f1', amount:5000, participants:['f1','f2','f3'], splitMode:'custom', shares:{f1:2600,f2:1500,f3:900}}];
+  const { nets, transfers } = settleDebts(exp, fams);
+  assert.strictEqual(nets.f1, 2400);   // 俾 5000 - 自己 2600
+  assert.strictEqual(nets.f2, -1500);
+  assert.strictEqual(nets.f3, -900);
+  const bf = Object.fromEntries(transfers.map(t=>[t.from, t]));
+  assert.strictEqual(bf.f2.to, 'f1'); assert.strictEqual(bf.f2.amount, 1500);
+  assert.strictEqual(bf.f3.to, 'f1'); assert.strictEqual(bf.f3.amount, 900);
+}
+
 console.log('SETTLEMENT SELF-CHECK PASS');

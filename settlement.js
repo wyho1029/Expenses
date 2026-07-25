@@ -1,6 +1,7 @@
 // 純結算數學：計每家淨額 + 最少筆過數。瀏覽器同 Node 雙用。
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
 
+// e.splitMode==='custom' 時用 e.shares={famId: 金額}（已折合結算貨幣）；否則按家庭平分
 function settleDebts(expenses, families){
   const nets = {};
   for (const f of families) nets[f.id] = 0;
@@ -8,12 +9,15 @@ function settleDebts(expenses, families){
     if (e.deleted) continue;
     const parts = e.participants || [];
     if (!parts.length) continue;
-    const share = e.amount / parts.length;
     if (nets[e.payer] === undefined) nets[e.payer] = 0;
     nets[e.payer] += e.amount;
-    for (const p of parts){
-      if (nets[p] === undefined) nets[p] = 0;
-      nets[p] -= share;
+    if (e.splitMode === 'custom' && e.shares){
+      // 自訂金額：逐家實數
+      for (const p of parts){ if (nets[p] === undefined) nets[p] = 0; nets[p] -= (Number(e.shares[p]) || 0); }
+    } else {
+      // 按家庭平分
+      const share = e.amount / parts.length;
+      for (const p of parts){ if (nets[p] === undefined) nets[p] = 0; nets[p] -= share; }
     }
   }
   for (const k in nets) nets[k] = round2(nets[k]);

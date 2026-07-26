@@ -2,8 +2,16 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
+<base href="/Expenses/">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>旅行分帳</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="分帳">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg">
 <script>
 // 由 404.html 跳返嚟時，將 /Expenses/?/<slug> 還原做乾淨網址 /Expenses/<slug>
 (function(l){
@@ -99,6 +107,7 @@
   <button data-tab="add" class="on" onclick="go('add')"><span class="ic">➕</span>入數</button>
   <button data-tab="list" onclick="go('list')"><span class="ic">📋</span>清單</button>
   <button data-tab="settle" onclick="go('settle')"><span class="ic">💰</span>結算</button>
+  <button data-tab="stats" onclick="go('stats')"><span class="ic">📊</span>統計</button>
   <button data-tab="settings" onclick="go('settings')"><span class="ic">⚙️</span>設定</button>
 </nav>
 
@@ -165,8 +174,13 @@ async function refresh(){
   catch(e){}
   finally{ refreshing = false; }
 }
-function toast(msg){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
-  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'), 1600); }
+function toast(msg, actionLabel, actionFn){
+  const el = document.getElementById('toast');
+  el.innerHTML = esc(msg) + (actionLabel ? ` <button style="margin-left:10px;background:none;border:none;color:inherit;font:inherit;font-weight:700;text-decoration:underline;cursor:pointer">${esc(actionLabel)}</button>` : '');
+  if (actionLabel){ el.querySelector('button').onclick = ()=>{ el.classList.remove('show'); actionFn(); }; }
+  el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>el.classList.remove('show'), actionLabel ? 4500 : 1600);
+}
 
 function truthy(v){ return v === true || String(v).toUpperCase() === 'TRUE'; }
 function parseShares(v){ try{ return v ? JSON.parse(v) : {}; }catch(_){ return {}; } }
@@ -185,7 +199,8 @@ function fromSheets(sh){
       note:String(e.note==null?'':e.note), createdAt:String(e.createdAt||''),
       deleted: truthy(e.deleted), trip:String(e.trip||''),
       currency:String(e.currency||''), rate:Number(e.rate)||1,
-      splitMode:(String(e.splitMode||'')==='custom')?'custom':'family', shares:parseShares(e.shares) }))
+      splitMode:(String(e.splitMode||'')==='custom')?'custom':'family', shares:parseShares(e.shares),
+      by:String(e.by||'') }))
   };
 }
 
@@ -254,7 +269,7 @@ function go(tab){
   currentTab = tab; editingId = null; newTripMode = false;
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
   render();                                       // 即時（用快取，唔等網路）
-  if (tab==='list' || tab==='settle') refresh();  // 背景攞最新
+  if (tab==='list' || tab==='settle' || tab==='stats') refresh();  // 背景攞最新
 }
 
 // ---- trip bar（每個 trip 一條專屬網址，冇「所有 trip」清單）----
@@ -339,7 +354,7 @@ function render(){
     return;
   }
   if (!currentTripObj()){ v.innerHTML = ''; return; }  // landing / 搵唔到：tripbar 已處理
-  ({add:renderAdd, list:renderList, settle:renderSettle, settings:renderSettings}[currentTab])(v);
+  ({add:renderAdd, list:renderList, settle:renderSettle, stats:renderStats, settings:renderSettings}[currentTab])(v);
 }
 
 function renderAdd(v){
@@ -487,9 +502,9 @@ async function submitExpense(){
     bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip, currency, rate, splitMode, shares:sharesStr}));
     editingId = null;
   } else {
-    const id = 'e'+Date.now(), createdAt = new Date().toISOString();
-    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate, splitMode, shares});
-    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate, splitMode, shares:sharesStr}));
+    const id = 'e'+Date.now(), createdAt = new Date().toISOString(), by = myFamily();
+    state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate, splitMode, shares, by});
+    bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate, splitMode, shares:sharesStr, by}));
   }
   if (currentTab==='add') renderAdd(document.getElementById('view'));
   toast('已記低 ✓');
@@ -506,7 +521,13 @@ function delExpense(id){
   const e = state.expenses.find(x=>x.id===id); if(e) e.deleted = true;
   render();
   bgWrite(apiUpdate('Expenses', id, {deleted:'TRUE'}));
-  toast('已刪除');
+  toast('已刪除', '撤銷', ()=>undoDelete(id));
+}
+function undoDelete(id){
+  const e = state.expenses.find(x=>x.id===id); if(e) e.deleted = false;
+  render();
+  bgWrite(apiUpdate('Expenses', id, {deleted:'FALSE'}));
+  toast('已還原 ✓');
 }
 
 function renderList(v){
@@ -537,7 +558,7 @@ function renderList(v){
         <div class="exp">
           <div>
             <div><span class="cat">${esc(e.category)}</span> <b>${esc(famName(e.payer))}</b> 俾</div>
-            <div class="meta">${e.date} · ${e.splitMode==='custom' ? '自訂 · '+e.participants.map(p=>esc(famName(p))+' '+fmtC((e.shares&&e.shares[p])||0, e.currency||tripCurrency())).join('、') : '分：'+e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}</div>
+            <div class="meta">${e.date} · ${e.splitMode==='custom' ? '自訂 · '+e.participants.map(p=>esc(famName(p))+' '+fmtC((e.shares&&e.shares[p])||0, e.currency||tripCurrency())).join('、') : '分：'+e.participants.map(famName).map(esc).join('、')}${e.note?' · '+esc(e.note):''}${e.by?' · '+esc(famName(e.by))+'入':''}</div>
             <div class="acts"><button onclick="editExpense('${e.id}')">改</button><button onclick="delExpense('${e.id}')">刪</button></div>
           </div>
           <div class="amt">${fmtC(e.amount, e.currency||tripCurrency())}${(e.currency && e.currency!==tripCurrency()) ? `<div class="meta" style="text-align:right;font-weight:400;margin-top:2px">≈ ${fmt(baseAmt(e))}</div>` : ''}</div>
@@ -586,6 +607,48 @@ function renderSettle(v){
       ${transfers.length ? transfers.map(t=>`
         <div class="pay"><b>${esc(famName(t.from))}</b> 俾 <b>${esc(famName(t.to))}</b><div class="big" style="text-align:right">${fmt(t.amount)}${hkd(t.amount)}</div></div>
       `).join('') : '<div class="empty">大家啱數，唔使過數 🎉</div>'}
+    </div>`;
+}
+
+function renderStats(v){
+  const list = tripExpenses().filter(e=>!e.deleted);
+  const base = tripCurrency();
+  const fams = tripFamilies();
+  const paid = {}, owed = {}, catTot = {}; let total = 0;
+  fams.forEach(f=>{ paid[f.id]=0; owed[f.id]=0; });
+  list.forEach(e=>{
+    const amt = baseAmt(e); total += amt;
+    catTot[e.category] = (catTot[e.category]||0) + amt;
+    if (paid[e.payer]===undefined) paid[e.payer]=0;
+    paid[e.payer] += amt;
+    const parts = e.participants||[];
+    if (e.splitMode==='custom' && e.shares){ const r=e.rate||1; parts.forEach(p=>{ if(owed[p]===undefined) owed[p]=0; owed[p] += (Number(e.shares[p])||0)*r; }); }
+    else if (parts.length){ const sh=amt/parts.length; parts.forEach(p=>{ if(owed[p]===undefined) owed[p]=0; owed[p] += sh; }); }
+  });
+  const cats = Object.keys(catTot).sort((a,b)=>catTot[b]-catTot[a]);
+  const maxCat = cats.length ? catTot[cats[0]] : 0;
+  const showHkd2 = base && base!=='HKD';
+  if (showHkd2) ensureHkdRate(base);
+  const hr = hkdRate[base];
+  const hk = n => (showHkd2 && hr>0) ? `　≈ ${fmtC(n*hr,'HKD')}` : '';
+  v.innerHTML = `
+    <div class="card">
+      <div class="muted" style="margin-bottom:4px">總使費（${esc(base)}）</div>
+      <div style="font-size:22px;font-weight:700">${fmt(total)}<span class="muted" style="font-size:14px;font-weight:400">${hk(total)}</span></div>
+      <div class="muted" style="margin-top:2px">${list.length} 筆</div>
+    </div>
+    <div class="card">
+      <div class="muted" style="margin-bottom:10px">每家：俾咗 / 應攤 / 淨</div>
+      ${fams.filter(f=>paid[f.id]||owed[f.id]).map(f=>{ const n=round2(paid[f.id]-owed[f.id]); const c=n>0?'pos':n<0?'neg':'';
+        return `<div class="net"><div style="flex:1">${esc(f.name)}<div class="muted" style="font-size:12px">俾咗 ${fmt(paid[f.id])} · 應攤 ${fmt(owed[f.id])}</div></div><b class="${c}">${n>0?'+':''}${fmt(n)}</b></div>`; }).join('') || '<div class="empty">未有開支</div>'}
+    </div>
+    <div class="card">
+      <div class="muted" style="margin-bottom:10px">類別分佈</div>
+      ${cats.length ? cats.map(c=>`
+        <div style="margin-bottom:8px">
+          <div style="display:flex"><span style="flex:1">${esc(c)}</span><span class="muted">${fmt(catTot[c])}</span></div>
+          <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:3px"><div style="height:100%;width:${maxCat?Math.round(catTot[c]/maxCat*100):0}%;background:var(--accent)"></div></div>
+        </div>`).join('') : '<div class="empty">未有開支</div>'}
     </div>`;
 }
 
@@ -645,7 +708,7 @@ function addFam(){ const n=prompt('新家庭名稱：'); if(!(n&&n.trim())) retu
 function renameFam(id){ const n=prompt('改名：', famName(id)); if(!(n&&n.trim())) return; const f=state.families.find(x=>x.id===id); if(f) f.name=n.trim(); render(); bgWrite(apiUpdate('Families', id, {name:n.trim()})); }
 function toggleFam(id, active){ const f=state.families.find(x=>x.id===id); if(f) f.active=active; render(); bgWrite(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
-window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle') refresh(); });
+window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle'||currentTab==='stats') refresh(); });
 window.addEventListener('popstate', ()=>{ lockedSlug = urlSlug(); newTripMode=false; resolveTrip(); render(); });
 applyTheme();
 load();

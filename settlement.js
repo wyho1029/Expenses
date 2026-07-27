@@ -40,5 +40,27 @@ function settleDebts(expenses, families){
   return { nets, transfers };
 }
 
-if (typeof module !== 'undefined') module.exports = { settleDebts };
-if (typeof window !== 'undefined') window.settleDebts = settleDebts;
+// 幾家人一齊入數，好易撞單。同 trip、同日、同類別、同金額、同貨幣 = 疑似重覆。
+function findDupe(expenses, cand){
+  return expenses.find(e => !e.deleted && e.id !== cand.id && e.trip === cand.trip
+    && e.date === cand.date && e.category === cand.category
+    && (e.currency || '') === (cand.currency || '')
+    && Math.abs(e.amount - cand.amount) < 0.005) || null;
+}
+
+// 離線寫入佇列：逐個送，送成功先至由 queue 剝走（原地 mutate，由 caller 存返落 localStorage）。
+// send 掟錯 = 冇網 → 剩返嘅原封不動留低下次再試；伺服器答咗但 !ok = 資料有問題 → 掉咗佢唔好卡死條隊。
+async function flushQueue(queue, send){
+  let rejected = null;
+  while (queue.length){
+    let res;
+    try{ res = await send(queue[0].action, queue[0].payload); }
+    catch(e){ return { offline:true, rejected }; }
+    queue.shift();
+    if (!res || !res.ok) rejected = (res && res.error) || '未知錯誤';
+  }
+  return { offline:false, rejected };
+}
+
+if (typeof module !== 'undefined') module.exports = { settleDebts, findDupe, flushQueue };
+if (typeof window !== 'undefined'){ window.settleDebts = settleDebts; window.findDupe = findDupe; window.flushQueue = flushQueue; }

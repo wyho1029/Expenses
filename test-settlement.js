@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { settleDebts } = require('./settlement.js');
+const { settleDebts, findDupe, flushQueue } = require('./settlement.js');
 
 const fams = [{id:'f1'},{id:'f2'},{id:'f3'}];
 
@@ -65,4 +65,40 @@ const fams = [{id:'f1'},{id:'f2'},{id:'f3'}];
   assert.strictEqual(bf.f3.to, 'f1'); assert.strictEqual(bf.f3.amount, 900);
 }
 
-console.log('SETTLEMENT SELF-CHECK PASS');
+// 7. 重覆入數偵測
+{
+  const base = {id:'e1', trip:'t1', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'};
+  const list = [base];
+  // 一模一樣（另一家撞單）→ 揀得返
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'}).id, 'e1');
+  // 自己編輯自己唔算重覆
+  assert.strictEqual(findDupe(list, base), null);
+  // 日期／類別／金額／貨幣／trip 任何一樣唔同都唔算
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t1', date:'2026-08-02', category:'食物', amount:1200, currency:'TWD'}), null);
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t1', date:'2026-08-01', category:'交通', amount:1200, currency:'TWD'}), null);
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:1201, currency:'TWD'}), null);
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:1200, currency:'HKD'}), null);
+  assert.strictEqual(findDupe(list, {id:'e2', trip:'t2', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'}), null);
+  // 已刪除嘅唔會當重覆
+  assert.strictEqual(findDupe([Object.assign({}, base, {deleted:true})], {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'}), null);
+}
+
+// 8. 離線佇列：斷網要保住未送嘅，唔可以蝕咗筆數
+(async ()=>{
+  const q = [{action:'a',payload:1},{action:'b',payload:2},{action:'c',payload:3}];
+  let n = 0;
+  let r = await flushQueue(q, async ()=>{ if (++n === 2) throw new Error('offline'); return {ok:true}; });
+  assert.strictEqual(r.offline, true);
+  assert.deepStrictEqual(q.map(x=>x.action), ['b','c']);   // 第 1 個送咗，第 2 個死咗 → 留返 b、c
+  // 返到網再試，全部清曬
+  r = await flushQueue(q, async ()=>({ok:true}));
+  assert.strictEqual(r.offline, false);
+  assert.strictEqual(r.rejected, null);
+  assert.strictEqual(q.length, 0);
+  // 伺服器拒絕（唔係冇網）→ 唔好卡死條隊，掉咗佢繼續行
+  const q2 = [{action:'a'},{action:'b'}];
+  r = await flushQueue(q2, async (a)=> a==='a' ? {ok:false, error:'壞資料'} : {ok:true});
+  assert.strictEqual(q2.length, 0);
+  assert.strictEqual(r.rejected, '壞資料');
+  console.log('SETTLEMENT SELF-CHECK PASS');
+})();

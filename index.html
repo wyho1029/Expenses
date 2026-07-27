@@ -42,6 +42,8 @@
   h1{ font-size:20px; margin:4px 0 12px; display:flex; align-items:center; gap:8px; }
   h1 .refresh{ margin-left:auto; font-size:14px; font-weight:400; background:none; border:1px solid var(--line);
     color:var(--muted); padding:6px 10px; border-radius:8px; }
+  h1 .net{ font-size:12px; font-weight:500; color:var(--accent); background:var(--accent-soft);
+    padding:3px 8px; border-radius:99px; white-space:nowrap; }
   .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:var(--shadow); }
   label{ display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
   label:first-child{ margin-top:0; }
@@ -96,7 +98,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1><span id="title">旅行分帳</span>
+  <h1><span id="title">旅行分帳</span><span id="net" class="net" style="display:none"></span>
     <button class="refresh" id="themeBtn" onclick="toggleTheme()" style="margin-left:auto" aria-label="切換光暗">🌙</button>
     <button class="refresh" onclick="load()">↻ 刷新</button></h1>
   <div id="tripbar"></div>
@@ -154,21 +156,34 @@ async function api(action, payload){
     body: JSON.stringify(Object.assign({action}, payload)) });
   return await r.json();
 }
-function apiAppend(sheet, values){ return api('append', {sheet, values}); }
-function apiUpdate(sheet, id, values, idField){ return api('update', {sheet, id, values, idField: idField||'id'}); }
+// 唔即刻送，淨係整個描述出嚟入隊（所以離線都入到數）
+function apiAppend(sheet, values){ return {action:'append', payload:{sheet, values}}; }
+function apiUpdate(sheet, id, values, idField){ return {action:'update', payload:{sheet, id, values, idField: idField||'id'}}; }
 
-let pending = 0, refreshing = false, toastTimer = null;
-// 背景寫入：唔阻 UI，失敗先彈警告並同步返最新
-function bgWrite(promise){
-  pending++;
-  Promise.resolve(promise).then(res=>{
-    pending--;
-    if (!res || !res.ok){ alert('儲存失敗（已同步返最新）：' + (res && res.error)); load(); }
-  }).catch(e=>{ pending--; alert('儲存失敗（已同步返最新）：' + e); load(); });
+// ---- 離線佇列：寫入排隊、有網先送；未送完之前唔准用伺服器資料蓋走本機 ----
+let queue = [];
+try{ queue = JSON.parse(localStorage.getItem('queue') || '[]'); }catch(e){ queue = []; }
+let flushing = false, refreshing = false, toastTimer = null;
+function saveQueue(){ try{ localStorage.setItem('queue', JSON.stringify(queue)); }catch(e){} }
+function bgWrite(op){ queue.push(op); saveQueue(); renderNet(); flush(); }
+async function flush(){
+  if (flushing || !queue.length) return;
+  flushing = true;
+  let r;
+  try{ r = await flushQueue(queue, api); }
+  finally{ flushing = false; saveQueue(); renderNet(); }
+  if (r && r.rejected){ alert('有一筆寫入被伺服器拒絕：' + r.rejected + '\n已同步返最新資料。'); load(); }
 }
-// 背景靜默重新載入（唔阻 UI；有未完成寫入時跳過，避免衝突）
+function renderNet(){
+  const el = document.getElementById('net'); if (!el) return;
+  if (queue.length) el.textContent = (navigator.onLine ? '⏳ ' : '📴 ') + queue.length + ' 筆待上傳';
+  else el.textContent = navigator.onLine ? '' : '📴 離線';
+  el.style.display = el.textContent ? '' : 'none';
+}
+function saveCache(){ try{ localStorage.setItem('cache', JSON.stringify(state)); }catch(e){} }
+// 背景靜默重新載入（唔阻 UI；有未上傳嘅嘢時跳過，避免蓋走本機改動）
 async function refresh(){
-  if (pending > 0 || refreshing) return;
+  if (queue.length || refreshing) return;
   refreshing = true;
   try{ const res = await api('bootstrap'); if (res.ok){ state = fromSheets(res.data.sheets||{}); resolveTrip(); render(); } }
   catch(e){}
@@ -206,11 +221,24 @@ function fromSheets(sh){
 
 async function load(){
   if (API_URL.indexOf('PASTE_YOUR') === 0){ render(); return; }
+  // 1. 本機快取即刻上畫（冷啟動唔使等、冇網都睇到）
+  let cached = false;
+  try{
+    const c = localStorage.getItem('cache');
+    if (c){ state = JSON.parse(c); cached = true; resolveTrip(); render(); }
+  }catch(e){}
+  // 2. 先清晒未上傳嘅，先至攞伺服器資料，唔會蓋走本機
+  await flush();
+  if (queue.length){ if (cached) toast('📴 離線 · 顯示緊本機資料'); renderNet(); return; }
   try{
     const res = await api('bootstrap');
     if (!res.ok) throw res.error;
     state = fromSheets(res.data.sheets || {});
-  }catch(e){ alert('載入失敗：' + e); }
+  }catch(e){
+    if (cached) toast('📴 離線 · 顯示緊本機資料');
+    else alert('載入失敗：' + e);
+    resolveTrip(); render(); return;
+  }
   resolveTrip();
   render();
 }
@@ -347,6 +375,7 @@ function createTrip(){
 
 // ---- render ----
 function render(){
+  saveCache(); renderNet();
   renderTripBar();
   const v = document.getElementById('view');
   if (API_URL.indexOf('PASTE_YOUR') === 0){
@@ -502,6 +531,11 @@ async function submitExpense(){
     bgWrite(apiUpdate('Expenses', editingId, {date, category, payer, amount, participants:parts, note, trip:currentTrip, currency, rate, splitMode, shares:sharesStr}));
     editingId = null;
   } else {
+    const dup = findDupe(state.expenses, {id:null, trip:currentTrip, date, category, amount, currency});
+    if (dup && !confirm('似乎已經有一筆一樣嘅數：\n\n'
+        + dup.date + ' · ' + dup.category + ' · ' + fmtC(dup.amount, dup.currency || base)
+        + (dup.by ? '（' + famName(dup.by) + '入）' : '')
+        + '\n\n係咪真係要再入多一筆？')) return;
     const id = 'e'+Date.now(), createdAt = new Date().toISOString(), by = myFamily();
     state.expenses.push({id, date, category, payer, amount, participants:participants.slice(), note, createdAt, deleted:false, trip:currentTrip, currency, rate, splitMode, shares, by});
     bgWrite(apiAppend('Expenses', {id, date, category, payer, amount, participants:parts, note, createdAt, deleted:'FALSE', trip:currentTrip, currency, rate, splitMode, shares:sharesStr, by}));
@@ -708,7 +742,11 @@ function addFam(){ const n=prompt('新家庭名稱：'); if(!(n&&n.trim())) retu
 function renameFam(id){ const n=prompt('改名：', famName(id)); if(!(n&&n.trim())) return; const f=state.families.find(x=>x.id===id); if(f) f.name=n.trim(); render(); bgWrite(apiUpdate('Families', id, {name:n.trim()})); }
 function toggleFam(id, active){ const f=state.families.find(x=>x.id===id); if(f) f.active=active; render(); bgWrite(apiUpdate('Families', id, {active: active?'TRUE':'FALSE'})); }
 
-window.addEventListener('focus', ()=>{ if(currentTab==='list'||currentTab==='settle'||currentTab==='stats') refresh(); });
+window.addEventListener('focus', ()=>{ flush(); if(currentTab==='list'||currentTab==='settle'||currentTab==='stats') refresh(); });
+window.addEventListener('online', ()=>{ renderNet(); flush(); });
+window.addEventListener('offline', renderNet);
+// Service Worker：net-first（有網一定攞最新、唔會卡舊版），冇網先用快取 → 離線都開得到個 app
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 window.addEventListener('popstate', ()=>{ lockedSlug = urlSlug(); newTripMode=false; resolveTrip(); render(); });
 applyTheme();
 load();

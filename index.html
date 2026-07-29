@@ -283,9 +283,9 @@ async function fetchRate(from, to){
 }
 function myFamily(){ return localStorage.getItem('myFamily:'+currentTrip) || ''; }
 // 光暗主題
-function currentTheme(){ const t=localStorage.getItem('theme'); if(t) return t; return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; }
-function applyTheme(){ const t=localStorage.getItem('theme'); const r=document.documentElement; if(t) r.setAttribute('data-theme',t); else r.removeAttribute('data-theme'); const b=document.getElementById('themeBtn'); if(b) b.textContent = currentTheme()==='dark'?'☀️':'🌙'; }
-function toggleTheme(){ localStorage.setItem('theme', currentTheme()==='dark'?'light':'dark'); applyTheme(); }
+function currentTheme(){ const t=localStorage.getItem('hub-theme'); if(t) return t; return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; }
+function applyTheme(){ const t=localStorage.getItem('hub-theme'); const r=document.documentElement; if(t) r.setAttribute('data-theme',t); else r.removeAttribute('data-theme'); const b=document.getElementById('themeBtn'); if(b) b.textContent = currentTheme()==='dark'?'☀️':'🌙'; }
+function toggleTheme(){ localStorage.setItem('hub-theme', currentTheme()==='dark'?'light':'dark'); applyTheme(); }
 function currencyOptions(sel){
   const inList = PINNED.concat(ALL).some(x=>x[0]===sel);
   return `${sel && !inList ? `<option value="${esc(sel)}" selected>${esc(sel)}</option>`:''}

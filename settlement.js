@@ -41,10 +41,14 @@ function settleDebts(expenses, families){
 }
 
 // 幾家人一齊入數，好易撞單。同 trip、同日、同類別、同金額、同貨幣 = 疑似重覆。
+// 文字一律 trim、貨幣一律大寫先比，唔好因為多咗個空格／細楷就漏報。
+function nrm(s){ return String(s == null ? '' : s).trim(); }
 function findDupe(expenses, cand){
-  return expenses.find(e => !e.deleted && e.id !== cand.id && e.trip === cand.trip
-    && e.date === cand.date && e.category === cand.category
-    && (e.currency || '') === (cand.currency || '')
+  const trip = nrm(cand.trip), date = nrm(cand.date), cat = nrm(cand.category);
+  const cur = nrm(cand.currency).toUpperCase();
+  return expenses.find(e => !e.deleted && e.id !== cand.id
+    && nrm(e.trip) === trip && nrm(e.date) === date && nrm(e.category) === cat
+    && nrm(e.currency).toUpperCase() === cur
     && Math.abs(e.amount - cand.amount) < 0.005) || null;
 }
 

@@ -81,6 +81,11 @@ const fams = [{id:'f1'},{id:'f2'},{id:'f3'}];
   assert.strictEqual(findDupe(list, {id:'e2', trip:'t2', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'}), null);
   // 已刪除嘅唔會當重覆
   assert.strictEqual(findDupe([Object.assign({}, base, {deleted:true})], {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:1200, currency:'TWD'}), null);
+  // 多咗空格／貨幣細楷都要照捉到（Sheet 讀返嚟嘅字串唔一定乾淨）
+  assert.strictEqual(findDupe(list, {id:'e2', trip:' t1 ', date:'2026-08-01 ', category:' 食物', amount:1200, currency:'twd'}).id, 'e1');
+  // 貨幣一個空白一個 undefined = 兩邊都當空，照捉
+  assert.strictEqual(findDupe([{id:'e9', trip:'t1', date:'2026-08-01', category:'食物', amount:50}],
+    {id:'e2', trip:'t1', date:'2026-08-01', category:'食物', amount:50, currency:''}).id, 'e9');
 }
 
 // 8. 離線佇列：斷網要保住未送嘅，唔可以蝕咗筆數

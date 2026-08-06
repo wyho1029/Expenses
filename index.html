@@ -164,8 +164,14 @@ function apiUpdate(sheet, id, values, idField){ return {action:'update', payload
 let queue = [];
 try{ queue = JSON.parse(localStorage.getItem('queue') || '[]'); }catch(e){ queue = []; }
 let flushing = false, refreshing = false, toastTimer = null;
-function saveQueue(){ try{ localStorage.setItem('queue', JSON.stringify(queue)); }catch(e){} }
-function bgWrite(op){ queue.push(op); saveQueue(); renderNet(); flush(); }
+let writeSeq = 0;   // 每次寫入 +1；bootstrap 前後對唔上就代表期間有新改動，唔好覆蓋
+function saveQueue(){ try{ localStorage.setItem('queue', JSON.stringify(queue)); return true; }catch(e){ return false; } }
+function bgWrite(op){
+  writeSeq++; queue.push(op);
+  // 存唔到 = 關咗個 app 就冇咗，一定要話畀用戶知（storage 滿／私隱模式）
+  if (!saveQueue()) alert('⚠️ 呢部機存唔到離線資料（儲存空間滿咗，或者用緊私隱瀏覽）。\n呢筆嘢一關 app 就會冇咗，請連返網之後再入一次。');
+  renderNet(); flush();
+}
 async function flush(){
   if (flushing || !queue.length) return;
   flushing = true;
@@ -185,7 +191,12 @@ function saveCache(){ try{ localStorage.setItem('cache', JSON.stringify(state));
 async function refresh(){
   if (queue.length || refreshing) return;
   refreshing = true;
-  try{ const res = await api('bootstrap'); if (res.ok){ state = fromSheets(res.data.sheets||{}); resolveTrip(); render(); } }
+  try{
+    const seq = writeSeq;
+    const res = await api('bootstrap');
+    // 等緊回應嗰陣如果有新寫入，唔好用舊嘅伺服器資料蓋走佢
+    if (res.ok && seq === writeSeq){ state = fromSheets(res.data.sheets||{}); resolveTrip(); render(); }
+  }
   catch(e){}
   finally{ refreshing = false; }
 }
@@ -231,8 +242,11 @@ async function load(){
   await flush();
   if (queue.length){ if (cached) toast('📴 離線 · 顯示緊本機資料'); renderNet(); return; }
   try{
+    const seq = writeSeq;
     const res = await api('bootstrap');
     if (!res.ok) throw res.error;
+    // 同 refresh() 一樣：等回應期間入咗新嘢就唔好蓋走（下次 refresh 自然接返）
+    if (seq !== writeSeq){ render(); return; }
     state = fromSheets(res.data.sheets || {});
   }catch(e){
     if (cached) toast('📴 離線 · 顯示緊本機資料');
